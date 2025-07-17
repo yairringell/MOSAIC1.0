@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QPixmap, QPen
 from PyQt5.QtCore import Qt
-
+#111222
 class DraggableScalablePixmapItem(QGraphicsPixmapItem):
     def __init__(self, pixmap):
         super().__init__(pixmap)
