@@ -1,9 +1,11 @@
 import sys
+import cv2
+import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, 
                            QGraphicsView, QVBoxLayout, QWidget, QMenuBar, 
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
                            QGraphicsRectItem, QGraphicsPixmapItem, QLineEdit, QLabel,
-                           QGraphicsLineItem, QGraphicsPathItem)
+                           QGraphicsLineItem, QGraphicsPathItem, QSlider)
 from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor
 
@@ -222,6 +224,10 @@ class WorkspaceView(QGraphicsView):
         self.scene.setSceneRect(QRectF(0, 0, 2000, 1100))
         self.background_item = None
         self.rectangle_size = 10  # Default rectangle size
+        self.original_background_pixmap = None  # Store original background
+        self.edge_background_pixmap = None  # Store edge detection background
+        self.edge_mode = False  # Track if edge mode is active
+        self.edge_strength = 50  # Default edge detection strength (0-100)
         
         # Performance optimization flag
         self.scene.batch_operation = False
@@ -232,6 +238,8 @@ class WorkspaceView(QGraphicsView):
         self.current_path_item = None
         self.is_drawing = False
         self.rectangle_spacing = 1.3  # Default spacing multiplier
+        self.parallel_mode = False  # Parallel line mode
+        self.parallel_distance_multiplier = 0.7  # Distance multiplier for parallel lines
         
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -294,13 +302,87 @@ class WorkspaceView(QGraphicsView):
             Qt.SmoothTransformation
         )
         
-        # Add scaled background
-        self.background_item = QGraphicsPixmapItem(scaled_pixmap)
+        # Store the original scaled pixmap
+        self.original_background_pixmap = scaled_pixmap
+        
+        # Generate edge detection version
+        self.edge_background_pixmap = self.create_edge_detection(scaled_pixmap)
+        
+        # Add the appropriate background (original or edge based on current mode)
+        current_pixmap = self.edge_background_pixmap if self.edge_mode else self.original_background_pixmap
+        self.background_item = QGraphicsPixmapItem(current_pixmap)
         self.background_item.setZValue(-1)  # Put it behind everything
         self.scene.addItem(self.background_item)
         
         # Update scene rect to fit the scaled image
         self.scene.setSceneRect(QRectF(scaled_pixmap.rect()))
+    
+    def create_edge_detection(self, pixmap):
+        """Create an edge detection version of the pixmap using OpenCV Canny edge detection"""
+        # Convert QPixmap to OpenCV format
+        image = pixmap.toImage()
+        width = image.width()
+        height = image.height()
+        
+        # Convert QImage to numpy array
+        ptr = image.bits()
+        ptr.setsize(image.byteCount())
+        arr = np.array(ptr).reshape(height, width, 4)  # RGBA format
+        
+        # Convert RGBA to BGR for OpenCV (ignore alpha channel)
+        bgr_image = cv2.cvtColor(arr[:, :, :3], cv2.COLOR_RGB2BGR)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
+        
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Calculate thresholds based on edge strength (0-100)
+        # Convert strength to appropriate threshold values
+        base_threshold = self.edge_strength * 2  # Scale 0-100 to 0-200
+        low_threshold = max(10, base_threshold - 50)  # Minimum 10, typically 50 less than high
+        high_threshold = min(250, base_threshold + 50)  # Maximum 250, typically 50 more than low
+        
+        # Apply Canny edge detection with adjustable thresholds
+        edges = cv2.Canny(blurred, low_threshold, high_threshold)
+        
+        # Convert back to QPixmap
+        # Create a white background
+        edge_image = QPixmap(width, height)
+        edge_image.fill(Qt.white)
+        
+        # Create painter for the edge image
+        painter = QPainter(edge_image)
+        
+        # Draw the edges on the white background
+        for y in range(height):
+            for x in range(width):
+                if edges[y, x] > 0:  # If it's an edge pixel
+                    painter.setPen(QColor(0, 0, 0))  # Black edges
+                    painter.drawPoint(x, y)
+        
+        painter.end()
+        return edge_image
+    
+    def toggle_edge_mode(self):
+        """Toggle between original background and edge detection"""
+        if not self.original_background_pixmap:
+            return  # No background image loaded
+        
+        self.edge_mode = not self.edge_mode
+        
+        # Remove current background
+        if self.background_item:
+            self.scene.removeItem(self.background_item)
+        
+        # Add the appropriate background
+        current_pixmap = self.edge_background_pixmap if self.edge_mode else self.original_background_pixmap
+        self.background_item = QGraphicsPixmapItem(current_pixmap)
+        self.background_item.setZValue(-1)  # Put it behind everything
+        self.scene.addItem(self.background_item)
+        
+        return self.edge_mode
     
     def add_rectangle(self, x, y, width=100, height=100):
         rect = ScalableRectangle(x, y, width, height)
@@ -368,6 +450,30 @@ class WorkspaceView(QGraphicsView):
     def set_rectangle_spacing(self, spacing):
         """Set the spacing multiplier for rectangles along drawn lines"""
         self.rectangle_spacing = spacing
+    
+    def set_parallel_distance(self, distance):
+        """Set the distance multiplier for parallel lines"""
+        self.parallel_distance_multiplier = distance
+    
+    def set_parallel_mode(self, enabled):
+        """Enable or disable parallel line mode"""
+        self.parallel_mode = enabled
+    
+    def set_edge_strength(self, strength):
+        """Set the edge detection strength (0-100) and regenerate edge detection if needed"""
+        self.edge_strength = max(0, min(100, strength))  # Clamp between 0 and 100
+        
+        # If we have an original background and edge mode is active, regenerate edge detection
+        if self.original_background_pixmap and self.edge_mode:
+            self.edge_background_pixmap = self.create_edge_detection(self.original_background_pixmap)
+            
+            # Update the current background display
+            if self.background_item:
+                self.scene.removeItem(self.background_item)
+            
+            self.background_item = QGraphicsPixmapItem(self.edge_background_pixmap)
+            self.background_item.setZValue(-1)  # Put it behind everything
+            self.scene.addItem(self.background_item)
     
     def rotate_selected_rectangles(self, clockwise):
         # Rotate all selected rectangles
@@ -448,6 +554,10 @@ class WorkspaceView(QGraphicsView):
             # Create rectangles along the drawn path
             self.create_rectangles_along_path()
             
+            # If parallel mode is enabled, create parallel paths
+            if self.parallel_mode:
+                self.create_parallel_paths()
+            
             # Clear the path
             self.drawing_path = []
         else:
@@ -461,53 +571,12 @@ class WorkspaceView(QGraphicsView):
         # Enable batch operation mode for better performance
         self.scene.batch_operation = True
         
-        # Calculate spacing between rectangles based on rectangle size
-        spacing = self.rectangle_size * self.rectangle_spacing  # Use adjustable spacing
-        
         # Smooth the path by averaging neighboring points
-        smoothed_path = self.smooth_path(self.drawing_path)
+        self.smoothed_path = self.smooth_path(self.drawing_path)
         
-        # Sample points along the path at regular intervals
-        total_distance = 0
-        path_segments = []
-        
-        # Calculate distances between consecutive points
-        for i in range(len(smoothed_path) - 1):
-            p1 = smoothed_path[i]
-            p2 = smoothed_path[i + 1]
-            distance = ((p2.x() - p1.x()) ** 2 + (p2.y() - p1.y()) ** 2) ** 0.5
-            path_segments.append((p1, p2, distance))
-            total_distance += distance
-        
-        # Place rectangles at regular intervals
-        current_distance = 0
-        target_distance = 0
-        
-        for segment_idx, (p1, p2, segment_distance) in enumerate(path_segments):
-            while target_distance <= current_distance + segment_distance:
-                # Calculate position along this segment
-                if segment_distance > 0:
-                    ratio = (target_distance - current_distance) / segment_distance
-                    x = p1.x() + ratio * (p2.x() - p1.x())
-                    y = p1.y() + ratio * (p2.y() - p1.y())
-                    
-                    # Calculate smooth angle using neighboring segments
-                    angle_degrees = self.calculate_smooth_angle(smoothed_path, segment_idx, ratio)
-                    
-                    # Clamp angle to the allowed range (-89 to 89 degrees)
-                    angle_degrees = max(-89, min(89, angle_degrees))
-                    
-                    # Create rectangle at this position
-                    rect = self.add_rectangle(x - self.rectangle_size/2, y - self.rectangle_size/2, 
-                                            self.rectangle_size, self.rectangle_size)
-                    
-                    # Rotate the rectangle to match the smooth angle
-                    rect.current_rotation = angle_degrees
-                    rect.setRotation(angle_degrees)
-                
-                target_distance += spacing
-            
-            current_distance += segment_distance
+        # Only create rectangles on the main line if parallel mode is NOT enabled
+        if not self.parallel_mode:
+            self.create_rectangles_along_specific_path(self.smoothed_path)
         
         # Disable batch operation mode
         self.scene.batch_operation = False
@@ -535,48 +604,276 @@ class WorkspaceView(QGraphicsView):
         return smoothed
     
     def calculate_smooth_angle(self, path, segment_idx, ratio):
-        """Calculate a smooth angle by considering neighboring segments"""
+        """Calculate a smooth angle using immediate local direction"""
         import math
         
-        # Get current segment
+        # Get the current position
         p1 = path[segment_idx]
         p2 = path[segment_idx + 1]
+        current_x = p1.x() + ratio * (p2.x() - p1.x())
+        current_y = p1.y() + ratio * (p2.y() - p1.y())
         
-        # Calculate angle for current segment
-        dx = p2.x() - p1.x()
-        dy = p2.y() - p1.y()
-        current_angle = math.atan2(dy, dx)
+        # Simple approach: use a small window around the current position
+        # Look at points immediately before and after
         
-        # If we have neighboring segments, blend the angles
-        angles = [current_angle]
+        # Find the best points for direction calculation
+        # Look for points that are approximately 1-2 rectangle sizes away
+        target_distance = self.rectangle_size * 1.5
         
-        # Add previous segment angle if available
-        if segment_idx > 0:
-            prev_p1 = path[segment_idx - 1]
-            prev_p2 = path[segment_idx]
-            prev_dx = prev_p2.x() - prev_p1.x()
-            prev_dy = prev_p2.y() - prev_p1.y()
-            prev_angle = math.atan2(prev_dy, prev_dx)
-            angles.append(prev_angle)
+        # Search backwards from current position
+        back_point = None
+        for i in range(segment_idx, -1, -1):
+            if i == segment_idx:
+                # For current segment, check if we should use previous point or current position
+                if ratio > 0.5:
+                    test_point = QPointF(current_x, current_y)
+                else:
+                    test_point = path[i]
+            else:
+                test_point = path[i]
+            
+            dx = test_point.x() - current_x
+            dy = test_point.y() - current_y
+            distance = math.sqrt(dx*dx + dy*dy)
+            
+            if distance >= target_distance * 0.8:  # Found a good back point
+                back_point = test_point
+                break
         
-        # Add next segment angle if available
-        if segment_idx < len(path) - 2:
-            next_p1 = path[segment_idx + 1]
-            next_p2 = path[segment_idx + 2]
-            next_dx = next_p2.x() - next_p1.x()
-            next_dy = next_p2.y() - next_p1.y()
-            next_angle = math.atan2(next_dy, next_dx)
-            angles.append(next_angle)
+        # Search forwards from current position
+        forward_point = None
+        for i in range(segment_idx, len(path)):
+            if i == segment_idx:
+                # For current segment, check if we should use next point or current position
+                if ratio < 0.5:
+                    test_point = QPointF(current_x, current_y)
+                else:
+                    test_point = path[i + 1] if i + 1 < len(path) else path[i]
+            else:
+                test_point = path[i]
+            
+            dx = test_point.x() - current_x
+            dy = test_point.y() - current_y
+            distance = math.sqrt(dx*dx + dy*dy)
+            
+            if distance >= target_distance * 0.8:  # Found a good forward point
+                forward_point = test_point
+                break
         
-        # Handle angle wrapping around -π to π
-        # Convert to unit vectors and average them
-        avg_x = sum(math.cos(angle) for angle in angles) / len(angles)
-        avg_y = sum(math.sin(angle) for angle in angles) / len(angles)
+        # Calculate direction vector
+        if back_point and forward_point:
+            # Use the two reference points
+            direction_x = forward_point.x() - back_point.x()
+            direction_y = forward_point.y() - back_point.y()
+        elif forward_point:
+            # Only forward point available
+            direction_x = forward_point.x() - current_x
+            direction_y = forward_point.y() - current_y
+        elif back_point:
+            # Only back point available
+            direction_x = current_x - back_point.x()
+            direction_y = current_y - back_point.y()
+        else:
+            # Fallback to current segment
+            direction_x = p2.x() - p1.x()
+            direction_y = p2.y() - p1.y()
         
-        # Convert back to angle
-        smooth_angle = math.atan2(avg_y, avg_x)
+        # Calculate angle
+        if direction_x != 0 or direction_y != 0:
+            angle_radians = math.atan2(direction_y, direction_x)
+            angle_degrees = math.degrees(angle_radians)
+            
+            # Normalize angle to respect the -89 to +89 degree boundaries
+            # If angle is outside this range, flip it by 180 degrees to keep it within bounds
+            if angle_degrees > 89:
+                angle_degrees -= 180
+            elif angle_degrees < -89:
+                angle_degrees += 180
+            
+            # Ensure we're still within bounds after adjustment
+            angle_degrees = max(-89, min(89, angle_degrees))
+            
+            return angle_degrees
         
-        return math.degrees(smooth_angle)
+        return 0
+    
+    def create_parallel_paths(self):
+        """Create parallel paths on both sides of the drawn line"""
+        if not hasattr(self, 'smoothed_path') or len(self.smoothed_path) < 2:
+            return
+        
+        # Use the configurable parallel distance multiplier from the text input
+        parallel_distance = self.rectangle_size * self.parallel_distance_multiplier
+        
+        # First, create a resampled version of the smoothed path with consistent point spacing
+        # This ensures parallel lines have the same point density as the main line
+        resampled_path = self.resample_path_by_distance(self.smoothed_path)
+        
+        # Create parallel paths by offsetting each point of the resampled path
+        left_path = []
+        right_path = []
+        
+        # For each point in the resampled path, calculate the perpendicular offset
+        for i in range(len(resampled_path)):
+            current_point = resampled_path[i]
+            
+            # Calculate the direction at this point
+            if i == 0:
+                # First point: use direction to next point
+                next_point = resampled_path[i + 1]
+                direction_x = next_point.x() - current_point.x()
+                direction_y = next_point.y() - current_point.y()
+            elif i == len(resampled_path) - 1:
+                # Last point: use direction from previous point
+                prev_point = resampled_path[i - 1]
+                direction_x = current_point.x() - prev_point.x()
+                direction_y = current_point.y() - prev_point.y()
+            else:
+                # Middle points: use average direction of neighboring segments
+                prev_point = resampled_path[i - 1]
+                next_point = resampled_path[i + 1]
+                
+                # Direction from previous to current
+                dir1_x = current_point.x() - prev_point.x()
+                dir1_y = current_point.y() - prev_point.y()
+                
+                # Direction from current to next
+                dir2_x = next_point.x() - current_point.x()
+                dir2_y = next_point.y() - current_point.y()
+                
+                # Average the two directions for smoother curves
+                direction_x = (dir1_x + dir2_x) / 2
+                direction_y = (dir1_y + dir2_y) / 2
+            
+            # Normalize the direction vector
+            length = (direction_x * direction_x + direction_y * direction_y) ** 0.5
+            if length > 0:
+                unit_x = direction_x / length
+                unit_y = direction_y / length
+                
+                # Calculate perpendicular vector (90 degrees rotated)
+                perp_x = -unit_y
+                perp_y = unit_x
+                
+                # Calculate parallel points
+                left_point = QPointF(
+                    current_point.x() + perp_x * parallel_distance,
+                    current_point.y() + perp_y * parallel_distance
+                )
+                right_point = QPointF(
+                    current_point.x() - perp_x * parallel_distance,
+                    current_point.y() - perp_y * parallel_distance
+                )
+                
+                left_path.append(left_point)
+                right_path.append(right_point)
+        
+        # Create rectangles along the parallel paths using the same algorithm as main line
+        if left_path:
+            self.create_rectangles_along_specific_path(left_path)
+            
+        if right_path:
+            self.create_rectangles_along_specific_path(right_path)
+    
+    def resample_path_by_distance(self, path):
+        """Resample a path to have consistent point spacing based on rectangle spacing"""
+        if len(path) < 2:
+            return path
+        
+        # Calculate the target spacing between points
+        target_spacing = self.rectangle_size * self.rectangle_spacing
+        
+        # Create a new path with consistent spacing
+        resampled = [path[0]]  # Always include the first point
+        
+        # Calculate total path length and segments
+        path_segments = []
+        total_distance = 0
+        
+        for i in range(len(path) - 1):
+            p1 = path[i]
+            p2 = path[i + 1]
+            distance = ((p2.x() - p1.x()) ** 2 + (p2.y() - p1.y()) ** 2) ** 0.5
+            path_segments.append((p1, p2, distance))
+            total_distance += distance
+        
+        # Sample points at regular intervals
+        current_distance = 0
+        target_distance = target_spacing
+        
+        for p1, p2, segment_distance in path_segments:
+            while target_distance <= current_distance + segment_distance:
+                # Calculate position along this segment
+                if segment_distance > 0:
+                    ratio = (target_distance - current_distance) / segment_distance
+                    x = p1.x() + ratio * (p2.x() - p1.x())
+                    y = p1.y() + ratio * (p2.y() - p1.y())
+                    resampled.append(QPointF(x, y))
+                
+                target_distance += target_spacing
+            
+            current_distance += segment_distance
+        
+        # Always include the last point if it's not too close to the last resampled point
+        if len(resampled) > 0:
+            last_point = path[-1]
+            last_resampled = resampled[-1]
+            distance_to_last = ((last_point.x() - last_resampled.x()) ** 2 + 
+                               (last_point.y() - last_resampled.y()) ** 2) ** 0.5
+            if distance_to_last > target_spacing * 0.5:  # If it's far enough away
+                resampled.append(last_point)
+        
+        return resampled
+    
+    def create_rectangles_along_specific_path(self, path):
+        """Create rectangles along a specific path (used for parallel lines)"""
+        if len(path) < 2:
+            return
+        
+        # Calculate spacing between rectangles based on rectangle size
+        spacing = self.rectangle_size * self.rectangle_spacing
+        
+        # Sample points along the path at regular intervals
+        total_distance = 0
+        path_segments = []
+        
+        # Calculate distances between consecutive points
+        for i in range(len(path) - 1):
+            p1 = path[i]
+            p2 = path[i + 1]
+            distance = ((p2.x() - p1.x()) ** 2 + (p2.y() - p1.y()) ** 2) ** 0.5
+            path_segments.append((p1, p2, distance))
+            total_distance += distance
+        
+        # Place rectangles at regular intervals
+        current_distance = 0
+        target_distance = 0
+        
+        for segment_idx, (p1, p2, segment_distance) in enumerate(path_segments):
+            while target_distance <= current_distance + segment_distance:
+                # Calculate position along this segment
+                if segment_distance > 0:
+                    ratio = (target_distance - current_distance) / segment_distance
+                    x = p1.x() + ratio * (p2.x() - p1.x())
+                    y = p1.y() + ratio * (p2.y() - p1.y())
+                    
+                    # Calculate smooth angle using the parallel path
+                    angle_degrees = self.calculate_smooth_angle(path, segment_idx, ratio)
+                    
+                    # Clamp angle to the allowed range (-89 to 89 degrees)
+                    angle_degrees = max(-89, min(89, angle_degrees))
+                    
+                    # Create rectangle at this position
+                    rect = self.add_rectangle(x - self.rectangle_size/2, y - self.rectangle_size/2, 
+                                            self.rectangle_size, self.rectangle_size)
+                    
+                    # Rotate the rectangle to match the smooth angle
+                    rect.current_rotation = angle_degrees
+                    rect.setRotation(angle_degrees)
+                
+                target_distance += spacing
+            
+            current_distance += segment_distance
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -609,6 +906,20 @@ class MainWindow(QMainWindow):
         self.color_btn.clicked.connect(self.toggle_color_mode)
         toolbar_layout.addWidget(self.color_btn)
         
+        # Add parallel mode button
+        self.parallel_btn = QPushButton("Parallel")
+        self.parallel_btn.setCheckable(True)
+        self.parallel_btn.setChecked(False)
+        self.parallel_btn.clicked.connect(self.toggle_parallel_mode)
+        toolbar_layout.addWidget(self.parallel_btn)
+        
+        # Add edge detection button
+        self.edge_btn = QPushButton("Edge")
+        self.edge_btn.setCheckable(True)
+        self.edge_btn.setChecked(False)
+        self.edge_btn.clicked.connect(self.toggle_edge_mode)
+        toolbar_layout.addWidget(self.edge_btn)
+        
         # Add rectangle size input
         size_label = QLabel("Rectangle Size:")
         toolbar_layout.addWidget(size_label)
@@ -629,12 +940,53 @@ class MainWindow(QMainWindow):
         self.spacing_input.textChanged.connect(self.update_rectangle_spacing)
         toolbar_layout.addWidget(self.spacing_input)
         
+        # Add parallel distance input
+        parallel_distance_label = QLabel("Parallel Distance:")
+        toolbar_layout.addWidget(parallel_distance_label)
+        
+        self.parallel_distance_input = QLineEdit("0.7")
+        self.parallel_distance_input.setMaximumWidth(80)
+        self.parallel_distance_input.setPlaceholderText("Distance")
+        self.parallel_distance_input.textChanged.connect(self.update_parallel_distance)
+        toolbar_layout.addWidget(self.parallel_distance_input)
+        
+        # Add edge strength slider
+        edge_strength_label = QLabel("Edge Strength:")
+        toolbar_layout.addWidget(edge_strength_label)
+        
+        self.edge_strength_slider = QSlider(Qt.Horizontal)
+        self.edge_strength_slider.setMinimum(0)
+        self.edge_strength_slider.setMaximum(100)
+        self.edge_strength_slider.setValue(50)  # Default strength
+        self.edge_strength_slider.setMaximumWidth(100)
+        self.edge_strength_slider.valueChanged.connect(self.update_edge_strength)
+        toolbar_layout.addWidget(self.edge_strength_slider)
+        
+        # Add edge strength value label
+        self.edge_strength_value_label = QLabel("50")
+        self.edge_strength_value_label.setMinimumWidth(25)
+        toolbar_layout.addWidget(self.edge_strength_value_label)
+        
         toolbar_layout.addStretch()
         main_layout.addLayout(toolbar_layout)
         
-        # Create and add workspace view
+        # Create main content area with left taskbar and workspace
+        content_layout = QHBoxLayout()
+        
+        # Create and add workspace view first
         self.workspace = WorkspaceView()
-        main_layout.addWidget(self.workspace)
+        
+        # Create left taskbar (now that workspace exists)
+        self.create_left_taskbar()
+        content_layout.addWidget(self.left_taskbar)
+        
+        # Add workspace to layout
+        content_layout.addWidget(self.workspace)
+        
+        # Add content layout to main layout
+        main_widget = QWidget()
+        main_widget.setLayout(content_layout)
+        main_layout.addWidget(main_widget)
         
         # Initialize color toggle state
         self.color_mode = False
@@ -644,6 +996,126 @@ class MainWindow(QMainWindow):
         
         # Add initial instructions
         self.add_instructions()
+    
+    def toggle_parallel_mode(self):
+        """Toggle parallel line mode"""
+        self.workspace.set_parallel_mode(self.parallel_btn.isChecked())
+        if self.parallel_btn.isChecked():
+            self.parallel_btn.setText("Parallel: ON")
+        else:
+            self.parallel_btn.setText("Parallel")
+    
+    def create_left_taskbar(self):
+        """Create the left taskbar with tools and controls"""
+        self.left_taskbar = QWidget()
+        self.left_taskbar.setFixedWidth(200)
+        self.left_taskbar.setStyleSheet("background-color: #f0f0f0; border-right: 1px solid #ccc;")
+        
+        taskbar_layout = QVBoxLayout(self.left_taskbar)
+        taskbar_layout.setSpacing(10)
+        taskbar_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Title
+        title_label = QLabel("Tools")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        taskbar_layout.addWidget(title_label)
+        
+        # Separator
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #ccc;")
+        taskbar_layout.addWidget(line)
+        
+        # Drawing Mode Section
+        drawing_section = QLabel("Drawing Mode")
+        drawing_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 10px;")
+        taskbar_layout.addWidget(drawing_section)
+        
+        # Drawing mode toggle button
+        self.drawing_btn = QPushButton("Drawing: OFF")
+        self.drawing_btn.setCheckable(True)
+        self.drawing_btn.setChecked(False)
+        self.drawing_btn.clicked.connect(self.toggle_drawing_mode)
+        self.drawing_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(self.drawing_btn)
+        
+        # Rectangle Tools Section
+        rect_section = QLabel("Rectangle Tools")
+        rect_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(rect_section)
+        
+        # Quick rectangle buttons
+        rect_btn = QPushButton("Add Rectangle (T)")
+        rect_btn.clicked.connect(self.add_rectangle)
+        rect_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(rect_btn)
+        
+        half_rect_btn = QPushButton("Half Width (P)")
+        half_rect_btn.clicked.connect(self.add_half_width_rectangle)
+        half_rect_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(half_rect_btn)
+        
+        small_rect_btn = QPushButton("Half Size (O)")
+        small_rect_btn.clicked.connect(self.add_small_rectangle)
+        small_rect_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(small_rect_btn)
+        
+        # Navigation Section
+        nav_section = QLabel("Navigation")
+        nav_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(nav_section)
+        
+        # Navigation info
+        nav_info = QLabel("Arrow Keys: Pan\nMouse Wheel: Zoom")
+        nav_info.setStyleSheet("font-size: 10px; color: #666; margin-bottom: 5px;")
+        taskbar_layout.addWidget(nav_info)
+        
+        # Actions Section
+        actions_section = QLabel("Actions")
+        actions_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(actions_section)
+        
+        # Action buttons
+        fill_btn = QPushButton("Fill Selected (C)")
+        fill_btn.clicked.connect(self.fill_selected_rectangles)
+        fill_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(fill_btn)
+        
+        rotate_ccw_btn = QPushButton("Rotate CCW (R)")
+        rotate_ccw_btn.clicked.connect(lambda: self.workspace.rotate_selected_rectangles(False))
+        rotate_ccw_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(rotate_ccw_btn)
+        
+        rotate_cw_btn = QPushButton("Rotate CW (Y)")
+        rotate_cw_btn.clicked.connect(lambda: self.workspace.rotate_selected_rectangles(True))
+        rotate_cw_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(rotate_cw_btn)
+        
+        delete_btn = QPushButton("Delete (Del)")
+        delete_btn.clicked.connect(self.workspace.delete_selected_rectangles)
+        delete_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(delete_btn)
+        
+        # Add stretch to push everything to the top
+        taskbar_layout.addStretch()
+        
+        # Status Section at bottom
+        status_section = QLabel("Status")
+        status_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(status_section)
+        
+        # Status info
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("font-size: 10px; color: #666; margin-bottom: 10px;")
+        taskbar_layout.addWidget(self.status_label)
+    
+    def toggle_edge_mode(self):
+        """Toggle edge detection mode"""
+        edge_mode = self.workspace.toggle_edge_mode()
+        if edge_mode:
+            self.edge_btn.setText("Edge: ON")
+        else:
+            self.edge_btn.setText("Edge")
     
     def create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -706,13 +1178,64 @@ class MainWindow(QMainWindow):
     def update_rectangle_spacing(self, text):
         """Update the rectangle spacing based on input"""
         try:
-            spacing = float(text) if text else 1.5
+            spacing = float(text) if text else 1.3
             # Clamp spacing between 0.1 and 10.0
             spacing = max(0.1, min(10.0, spacing))
             self.workspace.set_rectangle_spacing(spacing)
         except ValueError:
             # If invalid input, keep current spacing
             pass
+    
+    def update_parallel_distance(self, text):
+        """Update the parallel distance based on input"""
+        try:
+            distance = float(text) if text else 0.7
+            # Clamp distance between 0.5 and 10.0
+            distance = max(0.5, min(10.0, distance))
+            self.workspace.set_parallel_distance(distance)
+        except ValueError:
+            # If invalid input, keep current distance
+            pass
+    
+    def update_edge_strength(self, value):
+        """Update the edge detection strength based on slider value"""
+        self.edge_strength_value_label.setText(str(value))
+        self.workspace.set_edge_strength(value)
+    
+    def toggle_drawing_mode(self):
+        """Toggle drawing mode from the taskbar"""
+        self.workspace.drawing_mode = self.drawing_btn.isChecked()
+        if self.workspace.drawing_mode:
+            self.workspace.setDragMode(QGraphicsView.NoDrag)
+            self.workspace.setCursor(self.workspace.drawing_cursor)
+            self.drawing_btn.setText("Drawing: ON")
+            self.status_label.setText("Drawing mode active")
+        else:
+            self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
+            self.workspace.setCursor(Qt.ArrowCursor)
+            self.drawing_btn.setText("Drawing: OFF")
+            self.status_label.setText("Ready")
+    
+    def add_half_width_rectangle(self):
+        """Add rectangle with half width"""
+        center = self.workspace.mapToScene(self.workspace.rect().center())
+        half_width = self.workspace.rectangle_size / 2
+        self.workspace.add_rectangle(center.x() - half_width/2, center.y() - self.workspace.rectangle_size/2, 
+                                   half_width, self.workspace.rectangle_size)
+        self.status_label.setText("Added half-width rectangle")
+    
+    def add_small_rectangle(self):
+        """Add rectangle with half size"""
+        center = self.workspace.mapToScene(self.workspace.rect().center())
+        half_size = self.workspace.rectangle_size / 2
+        self.workspace.add_rectangle(center.x() - half_size/2, center.y() - half_size/2, 
+                                   half_size, half_size)
+        self.status_label.setText("Added small rectangle")
+    
+    def fill_selected_rectangles(self):
+        """Fill selected rectangles with average color"""
+        self.workspace.fill_selected_rectangles()
+        self.status_label.setText("Filled selected rectangles")
     
     def clear_all(self):
         # Clear all items except background
