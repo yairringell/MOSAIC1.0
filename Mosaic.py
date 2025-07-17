@@ -1,120 +1,168 @@
-
 import sys
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QVBoxLayout, QHBoxLayout, QWidget, QAction, QFileDialog, QMenuBar, QFrame, QLabel
-)
-from PyQt5.QtGui import QPixmap, QPen
-from PyQt5.QtCore import Qt
-#111222
-class DraggableScalablePixmapItem(QGraphicsPixmapItem):
-    def __init__(self, pixmap):
-        super().__init__(pixmap)
-        self.setFlag(QGraphicsPixmapItem.ItemIsMovable, True)
-        self.setAcceptHoverEvents(True)
-        self.setAcceptedMouseButtons(Qt.LeftButton)
-        self.setAcceptDrops(True)
-        self.setTransformationMode(Qt.SmoothTransformation)
-        self.setZValue(0)
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMenuBar, QMenu, QAction, QVBoxLayout, QWidget, QLabel, QFileDialog, QHBoxLayout, QPushButton, QStackedWidget
+from PyQt5.QtGui import QPixmap, QPainter
+from PyQt5.QtCore import Qt, QPoint
+
+class DraggableLabel(QLabel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dragging = False
+        self.offset = QPoint()
+        self.image_position = QPoint(0, 0)
+        self._pixmap = None
+        self._original_pixmap = None
+        self.scale_factor = 1.0
+
+    def setPixmap(self, pixmap):
+        self._original_pixmap = pixmap
+        self._pixmap = pixmap
+        self.image_position = QPoint(0, 0)
+        self.scale_factor = 1.0
+        self.update()
 
     def wheelEvent(self, event):
-        # Scale up or down with the mouse wheel (PyQt5: use delta())
-        delta = event.delta() if hasattr(event, 'delta') else event.angleDelta().y()
-        factor = 1.15 if delta > 0 else 0.87
-        self.setScale(self.scale() * factor)
-        event.accept()
+        if self._pixmap:
+            # Check if mouse is within image bounds
+            mouse_pos = event.pos()
+            image_rect = self._pixmap.rect().translated(self.image_position)
+            if image_rect.contains(mouse_pos):
+                # Scale factor: increase/decrease by 2% per wheel step
+                if event.angleDelta().y() > 0:
+                    self.scale_factor *= 1.02
+                else:
+                    self.scale_factor *= 0.98
 
-    def hoverEnterEvent(self, event):
-        self.setCursor(Qt.SizeAllCursor)
-        super().hoverEnterEvent(event)
+            # Limit scaling
+            self.scale_factor = max(0.1, min(self.scale_factor, 5.0))
+            
+            # Scale the pixmap
+            new_width = int(self._original_pixmap.width() * self.scale_factor)
+            new_height = int(self._original_pixmap.height() * self.scale_factor)
+            self._pixmap = self._original_pixmap.scaled(new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            
+            self.update()
 
-    def hoverLeaveEvent(self, event):
-        self.setCursor(Qt.ArrowCursor)
-        super().hoverLeaveEvent(event)
+    def paintEvent(self, event):
+        if self._pixmap:
+            painter = QPainter(self)
+            painter.drawPixmap(self.image_position, self._pixmap)
+
+    def mousePressEvent(self, event):
+        if self._pixmap and event.button() == Qt.LeftButton:
+            # Check if click is within image bounds
+            click_pos = event.pos()
+            image_rect = self._pixmap.rect().translated(self.image_position)
+            if image_rect.contains(click_pos):
+                self.dragging = True
+                self.offset = click_pos - self.image_position
+
+    def mouseMoveEvent(self, event):
+        if self.dragging and self._pixmap:
+            new_pos = event.pos() - self.offset
+            self.image_position = new_pos
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.dragging = False
 
 class ImageEditor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PyQt Image Editor")
+
+        # Set window size
+        self.setWindowTitle("Image Editor")
         self.setGeometry(100, 100, 2000, 1100)
 
-        # Central widget and layout
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        # Create central widget
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
 
-        # Left task bar
-        self.task_bar = QFrame()
-        self.task_bar.setFrameShape(QFrame.StyledPanel)
-        self.task_bar.setFixedWidth(120)
-        main_layout.addWidget(self.task_bar)
+        # Create layout
+        self.main_layout = QHBoxLayout()
+        self.central_widget.setLayout(self.main_layout)
 
-        # Canvas area (graphics view)
-        self.scene = QGraphicsScene()
-        self.view = QGraphicsView(self.scene)
-        self.view.setBackgroundBrush(Qt.white)
-        main_layout.addWidget(self.view)
+        # Add left sidebar with fixed width
+        self.left_sidebar_widget = QWidget()
+        self.left_sidebar_widget.setFixedWidth(100)
+        self.left_sidebar_layout = QVBoxLayout()
+        self.left_sidebar_widget.setLayout(self.left_sidebar_layout)
+        self.main_layout.addWidget(self.left_sidebar_widget)
 
-        # Top menu bar
+        # Add task bar buttons to the left sidebar
+        task_button_1 = QPushButton("Task 1")
+        self.left_sidebar_layout.addWidget(task_button_1)
+
+        task_button_2 = QPushButton("Task 2")
+        self.left_sidebar_layout.addWidget(task_button_2)
+
+        task_button_3 = QPushButton("Task 3")
+        self.left_sidebar_layout.addWidget(task_button_3)
+
+        # Add stacked widget for canvases
+        self.canvas_stack = QStackedWidget()
+        self.main_layout.addWidget(self.canvas_stack)
+
+        # First canvas
+        self.canvas1 = DraggableLabel("No image loaded on Canvas 1")
+        self.canvas1.setStyleSheet("border: 1px solid black;")
+        self.canvas1.setAlignment(Qt.AlignCenter)
+        self.canvas_stack.addWidget(self.canvas1)
+
+        # Second canvas
+        self.canvas2 = QLabel("Canvas 2")
+        self.canvas2.setStyleSheet("border: 1px solid black;")
+        self.canvas2.setAlignment(Qt.AlignCenter)
+        self.canvas_stack.addWidget(self.canvas2)
+
+        # Add button to switch between canvases
+        switch_canvas_button = QPushButton("Switch Canvas")
+        switch_canvas_button.clicked.connect(self.switch_canvas)
+        self.left_sidebar_layout.addWidget(switch_canvas_button)
+
+        # Create menu bar
+        self.create_menu_bar()
+
+        # Add black frame to canvas1
+        self.frame1 = QWidget()
+        self.frame1.setFixedSize(1000, 1000)
+        self.frame1.setStyleSheet("border: 5px solid black;")
+
+        # Create layout for canvas1
+        canvas1_layout = QVBoxLayout()
+        canvas1_layout.addWidget(self.frame1)
+        canvas1_layout.setAlignment(Qt.AlignCenter)
+        self.canvas1.setLayout(canvas1_layout)
+
+    def create_menu_bar(self):
         menu_bar = QMenuBar(self)
         self.setMenuBar(menu_bar)
 
         # File menu
-        file_menu = menu_bar.addMenu("File")
-        open_action = QAction("Open Image", self)
+        file_menu = QMenu("File", self)
+        menu_bar.addMenu(file_menu)
+
+        # Open action
+        open_action = QAction("Open", self)
         open_action.triggered.connect(self.open_image)
         file_menu.addAction(open_action)
-        file_menu.addSeparator()
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
 
-        # Project menu
-        project_menu = menu_bar.addMenu("Project")
-        # (Add project actions here as needed)
-
-        # Placeholder for loaded image
-        self.image_item = None
+    def switch_canvas(self):
+        current_index = self.canvas_stack.currentIndex()
+        next_index = (current_index + 1) % self.canvas_stack.count()
+        self.canvas_stack.setCurrentIndex(next_index)
 
     def open_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp)")
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Image File", "", "Images (*.png *.xpm *.jpg *.jpeg *.bmp);;All Files (*)", options=options)
         if file_path:
             pixmap = QPixmap(file_path)
-            if not pixmap.isNull():
-                # Resize to fit within 1000x1000, keeping aspect ratio
-                max_w, max_h = 1000, 1000
-                orig_w, orig_h = pixmap.width(), pixmap.height()
-                ratio = min(max_w / orig_w, max_h / orig_h, 1.0)
-                new_w, new_h = int(orig_w * ratio), int(orig_h * ratio)
-                scaled_pixmap = pixmap.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                # Remove previous image and frame if they exist
-                if self.image_item:
-                    self.scene.removeItem(self.image_item)
-                if hasattr(self, 'frame_item') and self.frame_item:
-                    self.scene.removeItem(self.frame_item)
-                # Add image inside the frame, centered
-                x = 0 + (1000 - new_w) // 2
-                y = 0 + (1000 - new_h) // 2
-                self.image_item = DraggableScalablePixmapItem(scaled_pixmap)
-                self.image_item.setPos(x, y)
-                self.scene.addItem(self.image_item)
-                # Draw 1000x1000 frame at (0,0) and ensure it's on top
-                from PyQt5.QtGui import QPen
-                pen = QPen(Qt.black)
-                pen.setWidth(3)
-                self.frame_item = self.scene.addRect(0, 0, 1000, 1000, pen)
-                self.frame_item.setZValue(1)
-                # Set scene rect to show the frame and image
-                self.view.setSceneRect(0, 0, 1000, 1000)
-                self.view.fitInView(0, 0, 1000, 1000, Qt.KeepAspectRatio)
+            self.frame1.setStyleSheet("border: 5px solid black;")  # Keep the black border
+            self.frame1.setFixedSize(1000, 1000)  # Ensure the frame size remains 1000x1000
+            self.canvas1.setPixmap(pixmap)
 
-def main():
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     editor = ImageEditor()
     editor.show()
     sys.exit(app.exec_())
-
-if __name__ == "__main__":
-    main()
-
-
