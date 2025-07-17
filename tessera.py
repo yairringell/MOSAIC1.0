@@ -231,7 +231,7 @@ class WorkspaceView(QGraphicsView):
         
         # Performance optimization flag
         self.scene.batch_operation = False
-        
+        #jj
         # Drawing mode variables
         self.drawing_mode = False
         self.drawing_path = []
