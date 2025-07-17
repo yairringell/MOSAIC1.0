@@ -240,6 +240,9 @@ class WorkspaceView(QGraphicsView):
         self.rectangle_spacing = 1.3  # Default spacing multiplier
         self.parallel_mode = False  # Parallel line mode
         self.parallel_distance_multiplier = 0.7  # Distance multiplier for parallel lines
+        self.parallel_lines_count = 1  # Number of parallel lines on each side
+        self.second_line_spacing = 1.5  # Spacing multiplier for second parallel line
+        self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
         
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -454,6 +457,18 @@ class WorkspaceView(QGraphicsView):
     def set_parallel_distance(self, distance):
         """Set the distance multiplier for parallel lines"""
         self.parallel_distance_multiplier = distance
+    
+    def set_parallel_lines_count(self, count):
+        """Set the number of parallel lines on each side"""
+        self.parallel_lines_count = count
+    
+    def set_second_line_spacing(self, spacing):
+        """Set the spacing multiplier for the second parallel line"""
+        self.second_line_spacing = spacing
+    
+    def set_third_line_spacing(self, spacing):
+        """Set the spacing multiplier for the third parallel line"""
+        self.third_line_spacing = spacing
     
     def set_parallel_mode(self, enabled):
         """Enable or disable parallel line mode"""
@@ -703,77 +718,95 @@ class WorkspaceView(QGraphicsView):
             return
         
         # Use the configurable parallel distance multiplier from the text input
-        parallel_distance = self.rectangle_size * self.parallel_distance_multiplier
+        base_parallel_distance = self.rectangle_size * self.parallel_distance_multiplier
         
         # First, create a resampled version of the smoothed path with consistent point spacing
         # This ensures parallel lines have the same point density as the main line
         resampled_path = self.resample_path_by_distance(self.smoothed_path)
         
-        # Create parallel paths by offsetting each point of the resampled path
-        left_path = []
-        right_path = []
-        
-        # For each point in the resampled path, calculate the perpendicular offset
-        for i in range(len(resampled_path)):
-            current_point = resampled_path[i]
-            
-            # Calculate the direction at this point
-            if i == 0:
-                # First point: use direction to next point
-                next_point = resampled_path[i + 1]
-                direction_x = next_point.x() - current_point.x()
-                direction_y = next_point.y() - current_point.y()
-            elif i == len(resampled_path) - 1:
-                # Last point: use direction from previous point
-                prev_point = resampled_path[i - 1]
-                direction_x = current_point.x() - prev_point.x()
-                direction_y = current_point.y() - prev_point.y()
+        # Create multiple parallel paths on each side
+        for line_index in range(1, self.parallel_lines_count + 1):
+            # Calculate distance for this line with better spacing
+            # Keep first line close, increase spacing for second line, then larger spacing for additional lines
+            if line_index == 1:
+                # First line: use original spacing
+                parallel_distance = base_parallel_distance * line_index
+            elif line_index == 2:
+                # Second line: use configurable spacing multiplier
+                parallel_distance = base_parallel_distance * line_index * self.second_line_spacing
+            elif line_index == 3:
+                # Third line: use configurable spacing multiplier
+                parallel_distance = base_parallel_distance * line_index * self.third_line_spacing
             else:
-                # Middle points: use average direction of neighboring segments
-                prev_point = resampled_path[i - 1]
-                next_point = resampled_path[i + 1]
-                
-                # Direction from previous to current
-                dir1_x = current_point.x() - prev_point.x()
-                dir1_y = current_point.y() - prev_point.y()
-                
-                # Direction from current to next
-                dir2_x = next_point.x() - current_point.x()
-                dir2_y = next_point.y() - current_point.y()
-                
-                # Average the two directions for smoother curves
-                direction_x = (dir1_x + dir2_x) / 2
-                direction_y = (dir1_y + dir2_y) / 2
+                # Additional lines: use larger spacing to prevent overlap
+                spacing_multiplier = 1.5  # Increase spacing for lines 4+
+                parallel_distance = base_parallel_distance * (3.6 + (line_index - 3) * spacing_multiplier)
             
-            # Normalize the direction vector
-            length = (direction_x * direction_x + direction_y * direction_y) ** 0.5
-            if length > 0:
-                unit_x = direction_x / length
-                unit_y = direction_y / length
-                
-                # Calculate perpendicular vector (90 degrees rotated)
-                perp_x = -unit_y
-                perp_y = unit_x
-                
-                # Calculate parallel points
-                left_point = QPointF(
-                    current_point.x() + perp_x * parallel_distance,
-                    current_point.y() + perp_y * parallel_distance
-                )
-                right_point = QPointF(
-                    current_point.x() - perp_x * parallel_distance,
-                    current_point.y() - perp_y * parallel_distance
-                )
-                
-                left_path.append(left_point)
-                right_path.append(right_point)
-        
-        # Create rectangles along the parallel paths using the same algorithm as main line
-        if left_path:
-            self.create_rectangles_along_specific_path(left_path)
+            # Create parallel paths by offsetting each point of the resampled path
+            left_path = []
+            right_path = []
             
-        if right_path:
-            self.create_rectangles_along_specific_path(right_path)
+            # For each point in the resampled path, calculate the perpendicular offset
+            for i in range(len(resampled_path)):
+                current_point = resampled_path[i]
+                
+                # Calculate the direction at this point
+                if i == 0:
+                    # First point: use direction to next point
+                    next_point = resampled_path[i + 1]
+                    direction_x = next_point.x() - current_point.x()
+                    direction_y = next_point.y() - current_point.y()
+                elif i == len(resampled_path) - 1:
+                    # Last point: use direction from previous point
+                    prev_point = resampled_path[i - 1]
+                    direction_x = current_point.x() - prev_point.x()
+                    direction_y = current_point.y() - prev_point.y()
+                else:
+                    # Middle points: use average direction of neighboring segments
+                    prev_point = resampled_path[i - 1]
+                    next_point = resampled_path[i + 1]
+                    
+                    # Direction from previous to current
+                    dir1_x = current_point.x() - prev_point.x()
+                    dir1_y = current_point.y() - prev_point.y()
+                    
+                    # Direction from current to next
+                    dir2_x = next_point.x() - current_point.x()
+                    dir2_y = next_point.y() - current_point.y()
+                    
+                    # Average the two directions for smoother curves
+                    direction_x = (dir1_x + dir2_x) / 2
+                    direction_y = (dir1_y + dir2_y) / 2
+                
+                # Normalize the direction vector
+                length = (direction_x * direction_x + direction_y * direction_y) ** 0.5
+                if length > 0:
+                    unit_x = direction_x / length
+                    unit_y = direction_y / length
+                    
+                    # Calculate perpendicular vector (90 degrees rotated)
+                    perp_x = -unit_y
+                    perp_y = unit_x
+                    
+                    # Calculate parallel points
+                    left_point = QPointF(
+                        current_point.x() + perp_x * parallel_distance,
+                        current_point.y() + perp_y * parallel_distance
+                    )
+                    right_point = QPointF(
+                        current_point.x() - perp_x * parallel_distance,
+                        current_point.y() - perp_y * parallel_distance
+                    )
+                    
+                    left_path.append(left_point)
+                    right_path.append(right_point)
+            
+            # Create rectangles along the parallel paths using the same algorithm as main line
+            if left_path:
+                self.create_rectangles_along_specific_path(left_path)
+                
+            if right_path:
+                self.create_rectangles_along_specific_path(right_path)
     
     def resample_path_by_distance(self, path):
         """Resample a path to have consistent point spacing based on rectangle spacing"""
@@ -950,6 +983,36 @@ class MainWindow(QMainWindow):
         self.parallel_distance_input.textChanged.connect(self.update_parallel_distance)
         toolbar_layout.addWidget(self.parallel_distance_input)
         
+        # Add parallel lines count input
+        parallel_lines_label = QLabel("Parallel Lines:")
+        toolbar_layout.addWidget(parallel_lines_label)
+        
+        self.parallel_lines_input = QLineEdit("1")
+        self.parallel_lines_input.setMaximumWidth(80)
+        self.parallel_lines_input.setPlaceholderText("Lines")
+        self.parallel_lines_input.textChanged.connect(self.update_parallel_lines_count)
+        toolbar_layout.addWidget(self.parallel_lines_input)
+        
+        # Add second line spacing input
+        second_line_spacing_label = QLabel("2nd Line Spacing:")
+        toolbar_layout.addWidget(second_line_spacing_label)
+        
+        self.second_line_spacing_input = QLineEdit("1.5")
+        self.second_line_spacing_input.setMaximumWidth(80)
+        self.second_line_spacing_input.setPlaceholderText("Spacing")
+        self.second_line_spacing_input.textChanged.connect(self.update_second_line_spacing)
+        toolbar_layout.addWidget(self.second_line_spacing_input)
+        
+        # Add third line spacing input
+        third_line_spacing_label = QLabel("3rd Line Spacing:")
+        toolbar_layout.addWidget(third_line_spacing_label)
+        
+        self.third_line_spacing_input = QLineEdit("1.7")
+        self.third_line_spacing_input.setMaximumWidth(80)
+        self.third_line_spacing_input.setPlaceholderText("Spacing")
+        self.third_line_spacing_input.textChanged.connect(self.update_third_line_spacing)
+        toolbar_layout.addWidget(self.third_line_spacing_input)
+        
         # Add edge strength slider
         edge_strength_label = QLabel("Edge Strength:")
         toolbar_layout.addWidget(edge_strength_label)
@@ -970,7 +1033,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addStretch()
         main_layout.addLayout(toolbar_layout)
         
-        # Create main content area with left taskbar and workspace
+        # Create main content area with left taskbar, workspace, and right taskbar
         content_layout = QHBoxLayout()
         
         # Create and add workspace view first
@@ -982,6 +1045,10 @@ class MainWindow(QMainWindow):
         
         # Add workspace to layout
         content_layout.addWidget(self.workspace)
+        
+        # Create right taskbar
+        self.create_right_taskbar()
+        content_layout.addWidget(self.right_taskbar)
         
         # Add content layout to main layout
         main_widget = QWidget()
@@ -1000,10 +1067,15 @@ class MainWindow(QMainWindow):
     def toggle_parallel_mode(self):
         """Toggle parallel line mode"""
         self.workspace.set_parallel_mode(self.parallel_btn.isChecked())
+        # Update both buttons
         if self.parallel_btn.isChecked():
             self.parallel_btn.setText("Parallel: ON")
+            self.right_parallel_btn.setChecked(True)
+            self.right_parallel_btn.setText("Parallel Mode: ON")
         else:
             self.parallel_btn.setText("Parallel")
+            self.right_parallel_btn.setChecked(False)
+            self.right_parallel_btn.setText("Parallel Mode: OFF")
     
     def create_left_taskbar(self):
         """Create the left taskbar with tools and controls"""
@@ -1109,13 +1181,199 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("font-size: 10px; color: #666; margin-bottom: 10px;")
         taskbar_layout.addWidget(self.status_label)
     
+    def create_right_taskbar(self):
+        """Create the right taskbar with additional controls and information"""
+        self.right_taskbar = QWidget()
+        self.right_taskbar.setFixedWidth(200)
+        self.right_taskbar.setStyleSheet("background-color: #f0f0f0; border-left: 1px solid #ccc;")
+        
+        taskbar_layout = QVBoxLayout(self.right_taskbar)
+        taskbar_layout.setSpacing(10)
+        taskbar_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Title
+        title_label = QLabel("Settings")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        taskbar_layout.addWidget(title_label)
+        
+        # Separator
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #ccc;")
+        taskbar_layout.addWidget(line)
+        
+        # Parallel Settings Section
+        parallel_section = QLabel("Parallel Settings")
+        parallel_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 10px;")
+        taskbar_layout.addWidget(parallel_section)
+        
+        # Parallel mode toggle
+        self.right_parallel_btn = QPushButton("Parallel Mode: OFF")
+        self.right_parallel_btn.setCheckable(True)
+        self.right_parallel_btn.setChecked(False)
+        self.right_parallel_btn.clicked.connect(self.toggle_parallel_mode_right)
+        self.right_parallel_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(self.right_parallel_btn)
+        
+        # Parallel lines count
+        lines_count_label = QLabel("Lines Count:")
+        lines_count_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(lines_count_label)
+        
+        self.right_parallel_lines_input = QLineEdit("1")
+        self.right_parallel_lines_input.setMaximumWidth(180)
+        self.right_parallel_lines_input.setPlaceholderText("Number of parallel lines")
+        self.right_parallel_lines_input.textChanged.connect(self.update_parallel_lines_count)
+        taskbar_layout.addWidget(self.right_parallel_lines_input)
+        
+        # Parallel distance
+        distance_label = QLabel("Parallel Distance:")
+        distance_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(distance_label)
+        
+        self.right_parallel_distance_input = QLineEdit("0.7")
+        self.right_parallel_distance_input.setMaximumWidth(180)
+        self.right_parallel_distance_input.setPlaceholderText("Distance multiplier")
+        self.right_parallel_distance_input.textChanged.connect(self.update_parallel_distance)
+        taskbar_layout.addWidget(self.right_parallel_distance_input)
+        
+        # Line Spacing Section
+        spacing_section = QLabel("Line Spacing")
+        spacing_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(spacing_section)
+        
+        # 2nd line spacing
+        second_line_label = QLabel("2nd Line Spacing:")
+        second_line_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(second_line_label)
+        
+        self.right_second_line_input = QLineEdit("1.5")
+        self.right_second_line_input.setMaximumWidth(180)
+        self.right_second_line_input.setPlaceholderText("Second line spacing multiplier")
+        self.right_second_line_input.textChanged.connect(self.update_second_line_spacing)
+        taskbar_layout.addWidget(self.right_second_line_input)
+        
+        # 3rd line spacing
+        third_line_label = QLabel("3rd Line Spacing:")
+        third_line_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(third_line_label)
+        
+        self.right_third_line_input = QLineEdit("1.7")
+        self.right_third_line_input.setMaximumWidth(180)
+        self.right_third_line_input.setPlaceholderText("Third line spacing multiplier")
+        self.right_third_line_input.textChanged.connect(self.update_third_line_spacing)
+        taskbar_layout.addWidget(self.right_third_line_input)
+        
+        # Rectangle Settings Section
+        rect_settings_section = QLabel("Rectangle Settings")
+        rect_settings_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(rect_settings_section)
+        
+        # Rectangle size
+        size_label = QLabel("Rectangle Size:")
+        size_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(size_label)
+        
+        self.right_size_input = QLineEdit("10")
+        self.right_size_input.setMaximumWidth(180)
+        self.right_size_input.setPlaceholderText("Rectangle size in pixels")
+        self.right_size_input.textChanged.connect(self.update_rectangle_size)
+        taskbar_layout.addWidget(self.right_size_input)
+        
+        # Line spacing
+        line_spacing_label = QLabel("Line Spacing:")
+        line_spacing_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(line_spacing_label)
+        
+        self.right_spacing_input = QLineEdit("1.3")
+        self.right_spacing_input.setMaximumWidth(180)
+        self.right_spacing_input.setPlaceholderText("Spacing between rectangles")
+        self.right_spacing_input.textChanged.connect(self.update_rectangle_spacing)
+        taskbar_layout.addWidget(self.right_spacing_input)
+        
+        # Edge Detection Section
+        edge_section = QLabel("Edge Detection")
+        edge_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(edge_section)
+        
+        # Edge mode toggle
+        self.right_edge_btn = QPushButton("Edge Mode: OFF")
+        self.right_edge_btn.setCheckable(True)
+        self.right_edge_btn.setChecked(False)
+        self.right_edge_btn.clicked.connect(self.toggle_edge_mode_right)
+        self.right_edge_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
+        taskbar_layout.addWidget(self.right_edge_btn)
+        
+        # Edge strength
+        edge_strength_label = QLabel("Edge Strength:")
+        edge_strength_label.setStyleSheet("font-size: 10px; color: #666;")
+        taskbar_layout.addWidget(edge_strength_label)
+        
+        self.right_edge_strength_slider = QSlider(Qt.Horizontal)
+        self.right_edge_strength_slider.setMinimum(0)
+        self.right_edge_strength_slider.setMaximum(100)
+        self.right_edge_strength_slider.setValue(50)
+        self.right_edge_strength_slider.setMaximumWidth(180)
+        self.right_edge_strength_slider.valueChanged.connect(self.update_edge_strength)
+        taskbar_layout.addWidget(self.right_edge_strength_slider)
+        
+        # Edge strength value
+        self.right_edge_strength_value_label = QLabel("50")
+        self.right_edge_strength_value_label.setStyleSheet("font-size: 10px; color: #666; text-align: center;")
+        taskbar_layout.addWidget(self.right_edge_strength_value_label)
+        
+        # Add stretch to push everything to the top
+        taskbar_layout.addStretch()
+        
+        # Info Section at bottom
+        info_section = QLabel("Information")
+        info_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
+        taskbar_layout.addWidget(info_section)
+        
+        # Info text
+        info_text = QLabel("Press D to toggle drawing mode.\nPress T to add rectangle.\nPress C to fill selected.")
+        info_text.setStyleSheet("font-size: 9px; color: #666; margin-bottom: 10px;")
+        info_text.setWordWrap(True)
+        taskbar_layout.addWidget(info_text)
+    
+    def toggle_parallel_mode_right(self):
+        """Toggle parallel mode from right taskbar"""
+        self.workspace.set_parallel_mode(self.right_parallel_btn.isChecked())
+        # Update both buttons
+        if self.right_parallel_btn.isChecked():
+            self.right_parallel_btn.setText("Parallel Mode: ON")
+            self.parallel_btn.setChecked(True)
+            self.parallel_btn.setText("Parallel: ON")
+        else:
+            self.right_parallel_btn.setText("Parallel Mode: OFF")
+            self.parallel_btn.setChecked(False)
+            self.parallel_btn.setText("Parallel")
+    
+    def toggle_edge_mode_right(self):
+        """Toggle edge mode from right taskbar"""
+        edge_mode = self.workspace.toggle_edge_mode()
+        # Update both buttons
+        if edge_mode:
+            self.right_edge_btn.setText("Edge Mode: ON")
+            self.edge_btn.setChecked(True)
+            self.edge_btn.setText("Edge: ON")
+        else:
+            self.right_edge_btn.setText("Edge Mode: OFF")
+            self.edge_btn.setChecked(False)
+            self.edge_btn.setText("Edge")
+    
     def toggle_edge_mode(self):
         """Toggle edge detection mode"""
         edge_mode = self.workspace.toggle_edge_mode()
+        # Update both buttons
         if edge_mode:
             self.edge_btn.setText("Edge: ON")
+            self.right_edge_btn.setChecked(True)
+            self.right_edge_btn.setText("Edge Mode: ON")
         else:
             self.edge_btn.setText("Edge")
+            self.right_edge_btn.setChecked(False)
+            self.right_edge_btn.setText("Edge Mode: OFF")
     
     def create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -1171,6 +1429,9 @@ class MainWindow(QMainWindow):
             # Clamp size between 10 and 500
             size = max(10, min(500, size))
             self.workspace.set_rectangle_size(size)
+            # Sync both inputs
+            self.size_input.setText(str(size))
+            self.right_size_input.setText(str(size))
         except ValueError:
             # If invalid input, keep current size
             pass
@@ -1182,6 +1443,9 @@ class MainWindow(QMainWindow):
             # Clamp spacing between 0.1 and 10.0
             spacing = max(0.1, min(10.0, spacing))
             self.workspace.set_rectangle_spacing(spacing)
+            # Sync both inputs
+            self.spacing_input.setText(str(spacing))
+            self.right_spacing_input.setText(str(spacing))
         except ValueError:
             # If invalid input, keep current spacing
             pass
@@ -1193,13 +1457,62 @@ class MainWindow(QMainWindow):
             # Clamp distance between 0.5 and 10.0
             distance = max(0.5, min(10.0, distance))
             self.workspace.set_parallel_distance(distance)
+            # Sync both inputs
+            self.parallel_distance_input.setText(str(distance))
+            self.right_parallel_distance_input.setText(str(distance))
         except ValueError:
             # If invalid input, keep current distance
+            pass
+    
+    def update_parallel_lines_count(self, text):
+        """Update the parallel lines count based on input"""
+        try:
+            count = int(text) if text else 1
+            # Clamp count between 1 and 10
+            count = max(1, min(10, count))
+            self.workspace.set_parallel_lines_count(count)
+            # Sync both inputs
+            self.parallel_lines_input.setText(str(count))
+            self.right_parallel_lines_input.setText(str(count))
+        except ValueError:
+            # If invalid input, keep current count
+            pass
+    
+    def update_second_line_spacing(self, text):
+        """Update the second line spacing multiplier based on input"""
+        try:
+            spacing = float(text) if text else 1.5
+            # Clamp spacing between 1.0 and 3.0
+            spacing = max(1.0, min(3.0, spacing))
+            self.workspace.set_second_line_spacing(spacing)
+            # Sync both inputs
+            self.second_line_spacing_input.setText(str(spacing))
+            self.right_second_line_input.setText(str(spacing))
+        except ValueError:
+            # If invalid input, keep current spacing
+            pass
+    
+    def update_third_line_spacing(self, text):
+        """Update the third line spacing multiplier based on input"""
+        try:
+            spacing = float(text) if text else 1.7
+            # Clamp spacing between 1.0 and 3.0
+            spacing = max(1.0, min(3.0, spacing))
+            self.workspace.set_third_line_spacing(spacing)
+            # Sync both inputs
+            self.third_line_spacing_input.setText(str(spacing))
+            self.right_third_line_input.setText(str(spacing))
+        except ValueError:
+            # If invalid input, keep current spacing
             pass
     
     def update_edge_strength(self, value):
         """Update the edge detection strength based on slider value"""
         self.edge_strength_value_label.setText(str(value))
+        self.right_edge_strength_value_label.setText(str(value))
+        # Sync both sliders
+        self.edge_strength_slider.setValue(value)
+        self.right_edge_strength_slider.setValue(value)
         self.workspace.set_edge_strength(value)
     
     def toggle_drawing_mode(self):
