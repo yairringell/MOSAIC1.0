@@ -1,12 +1,10 @@
 import sys
 import math
-import numpy as np
-import cv2
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, 
                            QGraphicsView, QVBoxLayout, QWidget, QMenuBar, 
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
                            QGraphicsRectItem, QGraphicsPixmapItem, QLineEdit, QLabel,
-                           QGraphicsLineItem, QGraphicsPathItem, QSlider)
+                           QGraphicsLineItem, QGraphicsPathItem, QSlider, QGridLayout)
 from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor
 
@@ -122,15 +120,11 @@ class ScalableRectangle(QGraphicsRectItem):
     def rotate_clockwise(self):
         # Rotate 1 degree clockwise
         self.current_rotation += 1
-        # Clamp rotation between -89 and 89 degrees
-        self.current_rotation = max(-89, min(89, self.current_rotation))
         self.setRotation(self.current_rotation)
     
     def rotate_counter_clockwise(self):
         # Rotate 1 degree counter-clockwise
         self.current_rotation -= 1
-        # Clamp rotation between -89 and 89 degrees
-        self.current_rotation = max(-89, min(89, self.current_rotation))
         self.setRotation(self.current_rotation)
     
     def fill_with_average_color(self):
@@ -234,9 +228,6 @@ class WorkspaceView(QGraphicsView):
         self.background_item = None
         self.rectangle_size = 10  # Default rectangle size
         self.original_background_pixmap = None  # Store original background
-        self.edge_background_pixmap = None  # Store edge detection background
-        self.edge_mode = False  # Track if edge mode is active
-        self.edge_strength = 50  # Default edge detection strength (0-100)
         
         # Performance optimization flag
         self.scene.batch_operation = False
@@ -252,14 +243,27 @@ class WorkspaceView(QGraphicsView):
         self.parallel_lines_count = 1  # Number of parallel lines on each side
         self.second_line_spacing = 1.5  # Spacing multiplier for second parallel line
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
+        self.fourth_line_spacing = 1.8  # Spacing multiplier for fourth parallel line
+        self.fifth_line_spacing = 1.85  # Spacing multiplier for fifth parallel line
         
-
+        # Circle mode variables
+        self.circle_mode = False  # Circle drawing mode
+        self.circle_radius = 7  # Number of rectangles in circle radius
+        
+        # Half rectangle mode
+        self.half_rectangle_mode = False  # Half rectangle mode
         
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
         
         # Create custom drawing cursor
         self.drawing_cursor = self.create_drawing_cursor()
+        
+        # Create circle cursor for circle mode
+        self.circle_cursor = self.create_circle_cursor()
+        
+        # Set initial cursor
+        self.setCursor(Qt.ArrowCursor)
         
     def create_drawing_cursor(self):
         """Create a 3x3 black square cursor"""
@@ -269,6 +273,32 @@ class WorkspaceView(QGraphicsView):
         
         # Create cursor with the pixmap, hotspot at center (1, 1)
         cursor = QCursor(pixmap, 1, 1)
+        return cursor
+    
+    def create_circle_cursor(self):
+        """Create a small circle cursor for circle mode"""
+        # Create a 15x15 pixmap for the circle cursor
+        size = 15
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)  # Transparent background
+        
+        # Create painter to draw the circle
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Draw a small circle outline
+        pen = QPen(QColor(139, 69, 19), 2)  # Brown color, 2px width
+        painter.setPen(pen)
+        painter.setBrush(QBrush(Qt.transparent))
+        
+        # Draw circle with some margin from edges
+        margin = 2
+        painter.drawEllipse(margin, margin, size - 2*margin, size - 2*margin)
+        
+        painter.end()
+        
+        # Create cursor with the circle pixmap, hotspot at center
+        cursor = QCursor(pixmap, size//2, size//2)
         return cursor
         
     def wheelEvent(self, event):
@@ -319,84 +349,13 @@ class WorkspaceView(QGraphicsView):
         # Store the original scaled pixmap
         self.original_background_pixmap = scaled_pixmap
         
-        # Generate edge detection version
-        self.edge_background_pixmap = self.create_edge_detection(scaled_pixmap)
-        
-        # Add the appropriate background (original or edge based on current mode)
-        current_pixmap = self.edge_background_pixmap if self.edge_mode else self.original_background_pixmap
-        self.background_item = QGraphicsPixmapItem(current_pixmap)
+        # Add the background
+        self.background_item = QGraphicsPixmapItem(scaled_pixmap)
         self.background_item.setZValue(-1)  # Put it behind everything
         self.scene.addItem(self.background_item)
         
         # Update scene rect to fit the scaled image
         self.scene.setSceneRect(QRectF(scaled_pixmap.rect()))
-    
-    def create_edge_detection(self, pixmap):
-        """Create an edge detection version of the pixmap using OpenCV Canny edge detection"""
-        # Convert QPixmap to OpenCV format
-        image = pixmap.toImage()
-        width = image.width()
-        height = image.height()
-        
-        # Convert QImage to numpy array
-        ptr = image.bits()
-        ptr.setsize(image.byteCount())
-        arr = np.array(ptr).reshape(height, width, 4)  # RGBA format
-        
-        # Convert RGBA to BGR for OpenCV (ignore alpha channel)
-        bgr_image = cv2.cvtColor(arr[:, :, :3], cv2.COLOR_RGB2BGR)
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
-        
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        # Calculate thresholds based on edge strength (0-100)
-        # Convert strength to appropriate threshold values
-        base_threshold = self.edge_strength * 2  # Scale 0-100 to 0-200
-        low_threshold = max(10, base_threshold - 50)  # Minimum 10, typically 50 less than high
-        high_threshold = min(250, base_threshold + 50)  # Maximum 250, typically 50 more than low
-        
-        # Apply Canny edge detection with adjustable thresholds
-        edges = cv2.Canny(blurred, low_threshold, high_threshold)
-        
-        # Convert back to QPixmap
-        # Create a white background
-        edge_image = QPixmap(width, height)
-        edge_image.fill(Qt.white)
-        
-        # Create painter for the edge image
-        painter = QPainter(edge_image)
-        
-        # Draw the edges on the white background
-        for y in range(height):
-            for x in range(width):
-                if edges[y, x] > 0:  # If it's an edge pixel
-                    painter.setPen(QColor(0, 0, 0))  # Black edges
-                    painter.drawPoint(x, y)
-        
-        painter.end()
-        return edge_image
-    
-    def toggle_edge_mode(self):
-        """Toggle between original background and edge detection"""
-        if not self.original_background_pixmap:
-            return  # No background image loaded
-        
-        self.edge_mode = not self.edge_mode
-        
-        # Remove current background
-        if self.background_item:
-            self.scene.removeItem(self.background_item)
-        
-        # Add the appropriate background
-        current_pixmap = self.edge_background_pixmap if self.edge_mode else self.original_background_pixmap
-        self.background_item = QGraphicsPixmapItem(current_pixmap)
-        self.background_item.setZValue(-1)  # Put it behind everything
-        self.scene.addItem(self.background_item)
-        
-        return self.edge_mode
     
     def add_rectangle(self, x, y, width=100, height=100):
         rect = ScalableRectangle(x, y, width, height)
@@ -404,45 +363,135 @@ class WorkspaceView(QGraphicsView):
         return rect
     
     def remove_overlapping_rectangles(self):
-        """Remove overlapping rectangles, keeping the older one (lower serial number)"""
+        """Remove overlapping rectangles, keeping the older one (lower serial number) - using existing overlap detection"""
         rectangles = []
         for item in self.scene.items():
             if isinstance(item, ScalableRectangle):
                 rectangles.append(item)
         
         if len(rectangles) < 2:
-            return  # No overlaps possible with less than 2 rectangles
+            return 0  # No overlaps possible with less than 2 rectangles
         
         rectangles_to_remove = []
         
-        # Check each rectangle against all others
-        for i, rect1 in enumerate(rectangles):
-            if rect1 in rectangles_to_remove:
+        # Use existing check_for_overlaps method for each rectangle
+        for rect in rectangles:
+            if rect in rectangles_to_remove:
                 continue
                 
-            for j, rect2 in enumerate(rectangles):
-                if i >= j or rect2 in rectangles_to_remove:
-                    continue
+            # Use the existing optimized overlap detection
+            if rect.check_for_overlaps():
+                # Find which specific rectangles this one overlaps with
+                search_rect = rect.sceneBoundingRect().adjusted(-50, -50, 50, 50)
+                nearby_items = self.scene.items(search_rect)
                 
-                # Check if rectangles overlap using collision detection
-                if rect1.collidesWithItem(rect2):
-                    # Remove the one with the higher serial number (created later)
-                    if rect1.serial_number > rect2.serial_number:
-                        rectangles_to_remove.append(rect1)
-                        break  # No need to check this rectangle further
-                    else:
-                        rectangles_to_remove.append(rect2)
+                for item in nearby_items:
+                    if (isinstance(item, ScalableRectangle) and 
+                        item != rect and 
+                        item not in rectangles_to_remove and
+                        rect.collidesWithItem(item)):
+                        
+                        # Remove the one with the higher serial number (created later)
+                        if rect.serial_number > item.serial_number:
+                            rectangles_to_remove.append(rect)
+                            break  # No need to check this rectangle further
+                        else:
+                            rectangles_to_remove.append(item)
         
         # Remove the overlapping rectangles
         for rect in rectangles_to_remove:
             self.scene.removeItem(rect)
         
-        # Force update of all remaining rectangles to clear red coloring
+        # Force update of remaining rectangles to clear red coloring
         for rect in rectangles:
             if rect not in rectangles_to_remove:
                 rect.update()
         
         return len(rectangles_to_remove)
+    
+    def create_circle_of_rectangles(self, center_pos):
+        """Create a circle of rectangles around a center position with a central rectangle at 45 degrees"""
+        # Create central rectangle at 45 degrees
+        center_rect = self.add_rectangle(
+            center_pos.x() - self.rectangle_size/2,
+            center_pos.y() - self.rectangle_size/2,
+            self.rectangle_size,
+            self.rectangle_size
+        )
+        center_rect.current_rotation = 45
+        center_rect.setRotation(45)
+        
+        # Calculate the diagonal size of rectangle (when rotated, this is the maximum span)
+        diagonal_size = self.rectangle_size * math.sqrt(2)
+        
+        # Create circles of rectangles around the center
+        for radius in range(1, self.circle_radius + 1):
+            # Calculate radius distance - minimal spacing to prevent overlap
+            # Use diagonal size plus minimal gap to prevent touching
+            minimal_gap = self.rectangle_size * 0.02  # Increase gap slightly to prevent overlap
+            
+            # Make outer circles progressively smaller and closer but avoid overlap
+            if radius == 1:
+                # First circle: normal spacing
+                radius_distance = radius * (diagonal_size + minimal_gap)
+            elif radius == 2:
+                # Second circle: make it smaller (more compressed)
+                compression_factor = 0.75  # More aggressive compression for second circle only
+                base_distance = radius * (diagonal_size + minimal_gap)
+                compressed_distance = base_distance * compression_factor
+                
+                # Ensure minimum distance from first circle
+                prev_radius_distance = diagonal_size + minimal_gap  # First circle distance
+                min_safe_distance = prev_radius_distance + diagonal_size + minimal_gap
+                radius_distance = max(compressed_distance, min_safe_distance)
+            else:
+                # Third circle and beyond: use NORMAL spacing (no compression)
+                radius_distance = radius * (diagonal_size + minimal_gap)
+                
+                # Ensure minimum distance from previous circle
+                if radius == 3:
+                    # Previous circle was the compressed second circle - calculate its actual distance
+                    second_circle_base = 2 * (diagonal_size + minimal_gap)
+                    second_circle_compressed = second_circle_base * 0.75
+                    second_circle_safe = (diagonal_size + minimal_gap) + diagonal_size + minimal_gap
+                    prev_radius_distance = max(second_circle_compressed, second_circle_safe)
+                else:
+                    # For radius 4+, previous circle used normal spacing
+                    prev_radius_distance = (radius - 1) * (diagonal_size + minimal_gap)
+                
+                min_safe_distance = prev_radius_distance + diagonal_size + minimal_gap
+                radius_distance = max(radius_distance, min_safe_distance)
+            
+            # Calculate the circumference at this radius
+            circumference = 2 * math.pi * radius_distance
+            
+            # Calculate number of rectangles needed to fit around the circle
+            # Use diagonal size plus minimal gap for tight packing
+            space_per_rectangle = diagonal_size + minimal_gap
+            num_rectangles = max(4, int(circumference / space_per_rectangle))
+            
+            # Create rectangles evenly spaced around the circle
+            for i in range(num_rectangles):
+                angle = (2 * math.pi * i) / num_rectangles
+                
+                # Calculate position on circle
+                rect_x = center_pos.x() + radius_distance * math.cos(angle) - self.rectangle_size/2
+                rect_y = center_pos.y() + radius_distance * math.sin(angle) - self.rectangle_size/2
+                
+                # Create rectangle
+                rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
+                
+                # Rotate rectangle to point towards center (tangent to circle)
+                angle_degrees = math.degrees(angle) + 90  # +90 to make it tangent
+                
+                rect.current_rotation = angle_degrees
+                rect.setRotation(angle_degrees)
+        
+        # Check if auto overlap removal is enabled
+        if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
+            removed_count = self.remove_overlapping_rectangles()
+            if removed_count > 0 and hasattr(self.main_window, 'status_label'):
+                self.main_window.status_label.setText(f"Circle created - Auto-removed {removed_count} overlapping rectangles")
     
 
     
@@ -453,7 +502,14 @@ class WorkspaceView(QGraphicsView):
             rect_x = center.x() - self.rectangle_size/2
             rect_y = center.y() - self.rectangle_size/2
             
-            self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
+            if self.half_rectangle_mode:
+                # Add half-width rectangle
+                half_width = self.rectangle_size / 2
+                rect_x = center.x() - half_width/2
+                self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size)
+            else:
+                # Add full rectangle
+                self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
         elif event.key() == Qt.Key_R:
             # Rotate selected rectangles counter-clockwise
             self.rotate_selected_rectangles(False)
@@ -499,10 +555,18 @@ class WorkspaceView(QGraphicsView):
             self.drawing_mode = not self.drawing_mode
             if self.drawing_mode:
                 self.setDragMode(QGraphicsView.NoDrag)
-                self.setCursor(self.drawing_cursor)  # Set custom cursor
+                # Use circle cursor if circle mode is on, otherwise use drawing cursor
+                if self.circle_mode:
+                    self.setCursor(self.circle_cursor)
+                else:
+                    self.setCursor(self.drawing_cursor)
             else:
                 self.setDragMode(QGraphicsView.RubberBandDrag)
-                self.setCursor(Qt.ArrowCursor)  # Reset to default cursor
+                # Use circle cursor if circle mode is on, otherwise use default cursor
+                if self.circle_mode:
+                    self.setCursor(self.circle_cursor)
+                else:
+                    self.setCursor(Qt.ArrowCursor)
         else:
             super().keyPressEvent(event)
     
@@ -530,27 +594,37 @@ class WorkspaceView(QGraphicsView):
         """Set the spacing multiplier for the third parallel line"""
         self.third_line_spacing = spacing
     
+    def set_fourth_line_spacing(self, spacing):
+        """Set the spacing multiplier for the fourth parallel line"""
+        self.fourth_line_spacing = spacing
+    
+    def set_fifth_line_spacing(self, spacing):
+        """Set the spacing multiplier for the fifth parallel line"""
+        self.fifth_line_spacing = spacing
+    
     def set_parallel_mode(self, enabled):
         """Enable or disable parallel line mode"""
         self.parallel_mode = enabled
     
-
-    
-    def set_edge_strength(self, strength):
-        """Set the edge detection strength (0-100) and regenerate edge detection if needed"""
-        self.edge_strength = max(0, min(100, strength))  # Clamp between 0 and 100
+    def set_circle_mode(self, enabled):
+        """Enable or disable circle drawing mode"""
+        self.circle_mode = enabled
         
-        # If we have an original background and edge mode is active, regenerate edge detection
-        if self.original_background_pixmap and self.edge_mode:
-            self.edge_background_pixmap = self.create_edge_detection(self.original_background_pixmap)
-            
-            # Update the current background display
-            if self.background_item:
-                self.scene.removeItem(self.background_item)
-            
-            self.background_item = QGraphicsPixmapItem(self.edge_background_pixmap)
-            self.background_item.setZValue(-1)  # Put it behind everything
-            self.scene.addItem(self.background_item)
+        # Update cursor based on circle mode
+        if self.circle_mode:
+            self.setCursor(self.circle_cursor)
+        else:
+            # Reset to appropriate cursor based on current mode
+            if self.drawing_mode:
+                self.setCursor(self.drawing_cursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+    
+    def set_half_rectangle_mode(self, enabled):
+        """Enable or disable half rectangle mode"""
+        self.half_rectangle_mode = enabled
+    
+
     
     def rotate_selected_rectangles(self, clockwise):
         # Rotate all selected rectangles
@@ -586,7 +660,11 @@ class WorkspaceView(QGraphicsView):
         v_scroll.setValue(v_scroll.value() + dy)
     
     def mousePressEvent(self, event):
-        if self.drawing_mode and event.button() == Qt.LeftButton:
+        if self.circle_mode and event.button() == Qt.LeftButton:
+            # Create a circle of rectangles at the click position
+            click_pos = self.mapToScene(event.pos())
+            self.create_circle_of_rectangles(click_pos)
+        elif self.drawing_mode and event.button() == Qt.LeftButton:
             # Start drawing a path
             self.is_drawing = True
             self.drawing_path = []
@@ -659,7 +737,11 @@ class WorkspaceView(QGraphicsView):
         
         # Only create rectangles on the main line if parallel mode is NOT enabled
         if not self.parallel_mode:
-            self.create_rectangles_along_specific_path(self.smoothed_path)
+            # Use half rectangles if half rectangle mode is enabled
+            if self.half_rectangle_mode:
+                self.create_half_rectangles_along_path(self.smoothed_path)
+            else:
+                self.create_rectangles_along_specific_path(self.smoothed_path)
         
         # Disable batch operation mode
         self.scene.batch_operation = False
@@ -688,7 +770,6 @@ class WorkspaceView(QGraphicsView):
     
     def calculate_smooth_angle(self, path, segment_idx, ratio):
         """Calculate a smooth angle using immediate local direction"""
-        import math
         
         # Get the current position
         p1 = path[segment_idx]
@@ -766,16 +847,6 @@ class WorkspaceView(QGraphicsView):
             angle_radians = math.atan2(direction_y, direction_x)
             angle_degrees = math.degrees(angle_radians)
             
-            # Normalize angle to respect the -89 to +89 degree boundaries
-            # If angle is outside this range, flip it by 180 degrees to keep it within bounds
-            if angle_degrees > 89:
-                angle_degrees -= 180
-            elif angle_degrees < -89:
-                angle_degrees += 180
-            
-            # Ensure we're still within bounds after adjustment
-            angle_degrees = max(-89, min(89, angle_degrees))
-            
             return angle_degrees
         
         return 0
@@ -805,10 +876,16 @@ class WorkspaceView(QGraphicsView):
             elif line_index == 3:
                 # Third line: use configurable spacing multiplier
                 parallel_distance = base_parallel_distance * line_index * self.third_line_spacing
+            elif line_index == 4:
+                # Fourth line: use configurable spacing multiplier
+                parallel_distance = base_parallel_distance * line_index * self.fourth_line_spacing
+            elif line_index == 5:
+                # Fifth line: use configurable spacing multiplier
+                parallel_distance = base_parallel_distance * line_index * self.fifth_line_spacing
             else:
-                # Additional lines: use larger spacing to prevent overlap
-                spacing_multiplier = 1.5  # Increase spacing for lines 4+
-                parallel_distance = base_parallel_distance * (3.6 + (line_index - 3) * spacing_multiplier)
+                # Additional lines (6+): use larger spacing to prevent overlap
+                spacing_multiplier = 1.5  # Increase spacing for lines 6+
+                parallel_distance = base_parallel_distance * (6.0 + (line_index - 5) * spacing_multiplier)
             
             # Create parallel paths by offsetting each point of the resampled path
             left_path = []
@@ -961,9 +1038,6 @@ class WorkspaceView(QGraphicsView):
                     # Calculate smooth angle using the parallel path
                     angle_degrees = self.calculate_smooth_angle(path, segment_idx, ratio)
                     
-                    # Clamp angle to the allowed range (-89 to 89 degrees)
-                    angle_degrees = max(-89, min(89, angle_degrees))
-                    
                     # Create rectangle at this position
                     rect_x = x - self.rectangle_size/2
                     rect_y = y - self.rectangle_size/2
@@ -976,12 +1050,65 @@ class WorkspaceView(QGraphicsView):
                 target_distance += spacing
             
             current_distance += segment_distance
+    
+    def create_half_rectangles_along_path(self, path):
+        """Create half-width rectangles along a specific path (only for single line drawing)"""
+        if len(path) < 2:
+            return
+        
+        # Calculate spacing between rectangles based on rectangle size
+        spacing = self.rectangle_size * self.rectangle_spacing
+        
+        # Sample points along the path at regular intervals
+        total_distance = 0
+        path_segments = []
+        
+        # Calculate distances between consecutive points
+        for i in range(len(path) - 1):
+            p1 = path[i]
+            p2 = path[i + 1]
+            distance = ((p2.x() - p1.x()) ** 2 + (p2.y() - p1.y()) ** 2) ** 0.5
+            path_segments.append((p1, p2, distance))
+            total_distance += distance
+        
+        # Place half rectangles at regular intervals
+        current_distance = 0
+        target_distance = 0
+        
+        for segment_idx, (p1, p2, segment_distance) in enumerate(path_segments):
+            while target_distance <= current_distance + segment_distance:
+                # Calculate position along this segment
+                if segment_distance > 0:
+                    ratio = (target_distance - current_distance) / segment_distance
+                    x = p1.x() + ratio * (p2.x() - p1.x())
+                    y = p1.y() + ratio * (p2.y() - p1.y())
+                    
+                    # Calculate smooth angle using the path
+                    angle_degrees = self.calculate_smooth_angle(path, segment_idx, ratio)
+                    
+                    # Create half-width rectangle at this position
+                    # For half rectangle mode, we want the long side along the line
+                    # So we create with full width and half height, with no additional rotation
+                    half_height = self.rectangle_size / 2
+                    rect_x = x - self.rectangle_size/2
+                    rect_y = y - half_height/2
+                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, half_height)
+                    
+                    # Rotate the rectangle to match the smooth angle (no additional offset)
+                    # This makes the long side align with the drawn line
+                    rect.current_rotation = angle_degrees
+                    rect.setRotation(angle_degrees)
+                
+                target_distance += spacing
+            
+            current_distance += segment_distance
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Tessera - Interactive Workspace")
         self.setGeometry(100, 100, 2000, 1100)
+        self.showMaximized()  # Start in full screen mode
         
         # Create central widget and layout
         central_widget = QWidget()
@@ -1008,42 +1135,6 @@ class MainWindow(QMainWindow):
         self.overlap_btn = QPushButton("Overlap")
         self.overlap_btn.clicked.connect(self.remove_overlapping_rectangles)
         toolbar_layout.addWidget(self.overlap_btn)
-        
-
-        
-        # Add edge detection button
-        self.edge_btn = QPushButton("Edge")
-        self.edge_btn.setCheckable(True)
-        self.edge_btn.setChecked(False)
-        self.edge_btn.clicked.connect(self.toggle_edge_mode)
-        toolbar_layout.addWidget(self.edge_btn)
-        
-        # Add rectangle size input
-        size_label = QLabel("Rectangle Size:")
-        toolbar_layout.addWidget(size_label)
-        
-        self.size_input = QLineEdit("10")
-        self.size_input.setMaximumWidth(80)
-        self.size_input.setPlaceholderText("Size")
-        self.size_input.textChanged.connect(self.update_rectangle_size)
-        toolbar_layout.addWidget(self.size_input)
-        
-        # Add edge strength slider
-        edge_strength_label = QLabel("Edge Strength:")
-        toolbar_layout.addWidget(edge_strength_label)
-        
-        self.edge_strength_slider = QSlider(Qt.Horizontal)
-        self.edge_strength_slider.setMinimum(0)
-        self.edge_strength_slider.setMaximum(100)
-        self.edge_strength_slider.setValue(50)  # Default strength
-        self.edge_strength_slider.setMaximumWidth(100)
-        self.edge_strength_slider.valueChanged.connect(self.update_edge_strength)
-        toolbar_layout.addWidget(self.edge_strength_slider)
-        
-        # Add edge strength value label
-        self.edge_strength_value_label = QLabel("50")
-        self.edge_strength_value_label.setMinimumWidth(25)
-        toolbar_layout.addWidget(self.edge_strength_value_label)
         
         toolbar_layout.addStretch()
         main_layout.addLayout(toolbar_layout)
@@ -1073,6 +1164,9 @@ class MainWindow(QMainWindow):
         # Initialize color toggle state
         self.color_mode = False
         
+        # Initialize selected color
+        self.selected_color = QColor(255, 0, 0)  # Default red
+        
         # Create menu bar
         self.create_menu_bar()
         
@@ -1087,17 +1181,6 @@ class MainWindow(QMainWindow):
             self.right_parallel_btn.setText("Parallel Mode: ON")
         else:
             self.right_parallel_btn.setText("Parallel Mode: OFF")
-    
-    def toggle_edge_mode(self):
-        """Toggle edge detection mode"""
-        edge_mode = self.workspace.toggle_edge_mode()
-        # Update top toolbar button only
-        if edge_mode:
-            self.edge_btn.setText("Edge: ON")
-        else:
-            self.edge_btn.setText("Edge")
-    
-
     
     def create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -1149,19 +1232,27 @@ class MainWindow(QMainWindow):
         
         self.workspace.add_rectangle(rect_x, rect_y, size, size)
     
-    def update_rectangle_size(self, text):
+    def update_rectangle_size(self):
         """Update the rectangle size based on input"""
+        text = self.right_size_input.text().strip()
+        
+        # If empty, set to default
+        if text == "":
+            self.right_size_input.setText("10")
+            self.workspace.set_rectangle_size(10)
+            return
+        
         try:
-            size = int(text) if text else 10
+            size = int(text)
             # Clamp size between 10 and 500
             size = max(10, min(500, size))
             self.workspace.set_rectangle_size(size)
-            # Sync both inputs
-            self.size_input.setText(str(size))
+            # Update the field with the clamped value
             self.right_size_input.setText(str(size))
         except ValueError:
-            # If invalid input, keep current size
-            pass
+            # If invalid input, reset to current size
+            current_size = self.workspace.rectangle_size
+            self.right_size_input.setText(str(current_size))
     
     def update_rectangle_spacing(self, text):
         """Update the rectangle spacing based on input"""
@@ -1202,50 +1293,38 @@ class MainWindow(QMainWindow):
             # If invalid input, keep current count
             pass
     
-    def update_second_line_spacing(self, text):
-        """Update the second line spacing multiplier based on input"""
+    def update_circle_count(self, text):
+        """Update the circle count based on input"""
         try:
-            spacing = float(text) if text else 1.5
-            # Clamp spacing between 1.0 and 3.0
-            spacing = max(1.0, min(3.0, spacing))
-            self.workspace.set_second_line_spacing(spacing)
+            count = int(text) if text else 7
+            # Clamp count between 1 and 20
+            count = max(1, min(20, count))
+            self.workspace.circle_radius = count
             # Sync right input only
-            self.right_second_line_input.setText(str(spacing))
+            self.right_circle_count_input.setText(str(count))
         except ValueError:
-            # If invalid input, keep current spacing
+            # If invalid input, keep current count
             pass
-    
-    def update_third_line_spacing(self, text):
-        """Update the third line spacing multiplier based on input"""
-        try:
-            spacing = float(text) if text else 1.7
-            # Clamp spacing between 1.0 and 3.0
-            spacing = max(1.0, min(3.0, spacing))
-            self.workspace.set_third_line_spacing(spacing)
-            # Sync right input only
-            self.right_third_line_input.setText(str(spacing))
-        except ValueError:
-            # If invalid input, keep current spacing
-            pass
-    
-    def update_edge_strength(self, value):
-        """Update the edge detection strength based on slider value"""
-        self.edge_strength_value_label.setText(str(value))
-        # Sync top toolbar slider only
-        self.edge_strength_slider.setValue(value)
-        self.workspace.set_edge_strength(value)
     
     def toggle_drawing_mode(self):
         """Toggle drawing mode from the taskbar"""
         self.workspace.drawing_mode = self.drawing_btn.isChecked()
         if self.workspace.drawing_mode:
             self.workspace.setDragMode(QGraphicsView.NoDrag)
-            self.workspace.setCursor(self.workspace.drawing_cursor)
+            # Use circle cursor if circle mode is on, otherwise use drawing cursor
+            if self.workspace.circle_mode:
+                self.workspace.setCursor(self.workspace.circle_cursor)
+            else:
+                self.workspace.setCursor(self.workspace.drawing_cursor)
             self.drawing_btn.setText("Drawing: ON")
             self.status_label.setText("Drawing mode active")
         else:
             self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
-            self.workspace.setCursor(Qt.ArrowCursor)
+            # Use circle cursor if circle mode is on, otherwise use default cursor
+            if self.workspace.circle_mode:
+                self.workspace.setCursor(self.workspace.circle_cursor)
+            else:
+                self.workspace.setCursor(Qt.ArrowCursor)
             self.drawing_btn.setText("Drawing: OFF")
             self.status_label.setText("Ready")
     
@@ -1382,13 +1461,20 @@ class MainWindow(QMainWindow):
         self.drawing_btn.clicked.connect(self.toggle_drawing_mode)
         right_layout.addWidget(self.drawing_btn)
         
+        # Add half rectangle mode toggle
+        self.half_rect_btn = QPushButton("Half Rectangle: OFF")
+        self.half_rect_btn.setCheckable(True)
+        self.half_rect_btn.setChecked(False)
+        self.half_rect_btn.clicked.connect(self.toggle_half_rectangle_mode)
+        right_layout.addWidget(self.half_rect_btn)
+        
         # Rectangle size input
         size_layout = QHBoxLayout()
         size_layout.addWidget(QLabel("Rectangle Size:"))
         self.right_size_input = QLineEdit("10")
         self.right_size_input.setMaximumWidth(80)
         self.right_size_input.setPlaceholderText("Size")
-        self.right_size_input.textChanged.connect(self.update_rectangle_size)
+        self.right_size_input.editingFinished.connect(self.update_rectangle_size)
         size_layout.addWidget(self.right_size_input)
         right_layout.addLayout(size_layout)
         
@@ -1398,6 +1484,23 @@ class MainWindow(QMainWindow):
         self.auto_overlap_checkbox.setChecked(False)
         self.auto_overlap_checkbox.clicked.connect(self.toggle_auto_overlap)
         right_layout.addWidget(self.auto_overlap_checkbox)
+        
+        # Circle mode toggle
+        self.circle_btn = QPushButton("Circle Mode: OFF")
+        self.circle_btn.setCheckable(True)
+        self.circle_btn.setChecked(False)
+        self.circle_btn.clicked.connect(self.toggle_circle_mode)
+        right_layout.addWidget(self.circle_btn)
+        
+        # Circle count input
+        circle_count_layout = QHBoxLayout()
+        circle_count_layout.addWidget(QLabel("Circle Count:"))
+        self.right_circle_count_input = QLineEdit("7")
+        self.right_circle_count_input.setMaximumWidth(80)
+        self.right_circle_count_input.setPlaceholderText("Count")
+        self.right_circle_count_input.textChanged.connect(self.update_circle_count)
+        circle_count_layout.addWidget(self.right_circle_count_input)
+        right_layout.addLayout(circle_count_layout)
         
         # Parallel Settings Section
         parallel_section_label = QLabel("Parallel Settings")
@@ -1441,25 +1544,23 @@ class MainWindow(QMainWindow):
         spacing_layout.addWidget(self.right_spacing_input)
         right_layout.addLayout(spacing_layout)
         
-        # Second line spacing input
-        second_line_layout = QHBoxLayout()
-        second_line_layout.addWidget(QLabel("2nd Line Spacing:"))
-        self.right_second_line_input = QLineEdit("1.5")
-        self.right_second_line_input.setMaximumWidth(80)
-        self.right_second_line_input.setPlaceholderText("Spacing")
-        self.right_second_line_input.textChanged.connect(self.update_second_line_spacing)
-        second_line_layout.addWidget(self.right_second_line_input)
-        right_layout.addLayout(second_line_layout)
+        # Color Palette Section
+        palette_label = QLabel("Color Palette")
+        palette_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        right_layout.addWidget(palette_label)
         
-        # Third line spacing input
-        third_line_layout = QHBoxLayout()
-        third_line_layout.addWidget(QLabel("3rd Line Spacing:"))
-        self.right_third_line_input = QLineEdit("1.7")
-        self.right_third_line_input.setMaximumWidth(80)
-        self.right_third_line_input.setPlaceholderText("Spacing")
-        self.right_third_line_input.textChanged.connect(self.update_third_line_spacing)
-        third_line_layout.addWidget(self.right_third_line_input)
-        right_layout.addLayout(third_line_layout)
+        # Create selected color display
+        selected_color_layout = QHBoxLayout()
+        selected_color_layout.addWidget(QLabel("Selected Color:"))
+        self.selected_color_display = QLabel()
+        self.selected_color_display.setFixedSize(30, 20)
+        self.selected_color_display.setStyleSheet("border: 1px solid black; background-color: #FF0000;")
+        selected_color_layout.addWidget(self.selected_color_display)
+        selected_color_layout.addStretch()
+        right_layout.addLayout(selected_color_layout)
+        
+        # Create color palette grid
+        self.create_color_palette(right_layout)
         
         # Add stretch to push everything to the top
         right_layout.addStretch()
@@ -1470,6 +1571,88 @@ class MainWindow(QMainWindow):
             self.auto_overlap_checkbox.setText("Auto Remove Overlaps: ON")
         else:
             self.auto_overlap_checkbox.setText("Auto Remove Overlaps: OFF")
+    
+    def toggle_circle_mode(self):
+        """Toggle circle mode"""
+        self.workspace.set_circle_mode(self.circle_btn.isChecked())
+        if self.circle_btn.isChecked():
+            self.circle_btn.setText("Circle Mode: ON")
+        else:
+            self.circle_btn.setText("Circle Mode: OFF")
+    
+    def toggle_half_rectangle_mode(self):
+        """Toggle half rectangle mode"""
+        self.workspace.set_half_rectangle_mode(self.half_rect_btn.isChecked())
+        if self.half_rect_btn.isChecked():
+            self.half_rect_btn.setText("Half Rectangle: ON")
+        else:
+            self.half_rect_btn.setText("Half Rectangle: OFF")
+    
+    def create_color_palette(self, layout):
+        """Create a 16-color palette grid"""
+        # Define 16 colors arranged in a visually appealing way
+        colors = [
+            # Row 1: Reds and Pinks
+            "#FF0000",  # red
+            "#FFC0CB",  # pink
+            "#FFA500",  # orange
+            "#FFFF00",  # yellow
+            
+            # Row 2: Greens
+            "#008000",  # green
+            "#90EE90",  # light green
+            "#8B4513",  # brown
+            "#DEB887",  # light brown (burlywood)
+            
+            # Row 3: Blues and Purples
+            "#0000FF",  # blue
+            "#ADD8E6",  # light blue
+            "#800080",  # purple
+            "#F5F5DC",  # off white (beige)
+            
+            # Row 4: Neutrals
+            "#000000",  # black
+            "#808080",  # grey
+            "#D3D3D3",  # light grey
+            "#FFFFFF"   # white
+        ]
+        
+        # Create grid layout for colors
+        palette_grid = QGridLayout()
+        palette_grid.setSpacing(0)
+        palette_grid.setContentsMargins(0, 0, 0, 0)
+        palette_grid.setVerticalSpacing(0)
+        palette_grid.setHorizontalSpacing(0)
+        
+        # Create color buttons in 4x4 grid
+        for i, color_hex in enumerate(colors):
+            row = i // 4
+            col = i % 4
+            
+            color_btn = QPushButton()
+            color_btn.setFixedSize(25, 25)
+            color_btn.setStyleSheet(f"background-color: {color_hex}; border: none; margin: 0px; padding: 0px;")
+            color_btn.clicked.connect(lambda checked, c=color_hex: self.select_color(c))
+            
+            palette_grid.addWidget(color_btn, row, col)
+        
+        # Set row and column stretches to 0 to prevent expansion
+        for i in range(4):
+            palette_grid.setRowStretch(i, 0)
+            palette_grid.setColumnStretch(i, 0)
+        
+        # Create widget to hold the grid
+        palette_widget = QWidget()
+        palette_widget.setLayout(palette_grid)
+        palette_widget.setContentsMargins(0, 0, 0, 0)
+        palette_widget.setStyleSheet("QWidget { margin: 0px; padding: 0px; }")
+        palette_widget.setFixedSize(100, 100)  # Fixed size: 4 columns × 25px = 100px, 4 rows × 25px = 100px
+        layout.addWidget(palette_widget)
+    
+    def select_color(self, color_hex):
+        """Select a color from the palette"""
+        self.selected_color = QColor(color_hex)
+        self.selected_color_display.setStyleSheet(f"border: 1px solid black; background-color: {color_hex};")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
