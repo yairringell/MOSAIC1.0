@@ -1,6 +1,7 @@
 import sys
-import cv2
+import math
 import numpy as np
+import cv2
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, 
                            QGraphicsView, QVBoxLayout, QWidget, QMenuBar, 
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
@@ -10,6 +11,9 @@ from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor
 
 class ScalableRectangle(QGraphicsRectItem):
+    # Class variable to track rectangle creation order
+    _next_serial_number = 1
+    
     def __init__(self, x, y, width, height):
         super().__init__(x, y, width, height)
         self.setFlag(QGraphicsRectItem.ItemIsMovable, True)
@@ -25,6 +29,10 @@ class ScalableRectangle(QGraphicsRectItem):
         self.current_rotation = 0  # Track current rotation angle
         self.is_filled = False  # Track if rectangle is filled with average color
         self.fill_color = Qt.transparent  # Store the fill color
+        
+        # Assign serial number and increment for next rectangle
+        self.serial_number = ScalableRectangle._next_serial_number
+        ScalableRectangle._next_serial_number += 1
         
         # Set rotation center to the center of the rectangle
         # The transform origin should be relative to the rectangle's bounds
@@ -204,8 +212,9 @@ class ScalableRectangle(QGraphicsRectItem):
         self.update()  # Trigger repaint
 
 class WorkspaceView(QGraphicsView):
-    def __init__(self):
+    def __init__(self, main_window=None):
         super().__init__()
+        self.main_window = main_window
         self.scene = QGraphicsScene()
         self.setScene(self.scene)
         self.setRenderHint(QPainter.Antialiasing)
@@ -243,6 +252,8 @@ class WorkspaceView(QGraphicsView):
         self.parallel_lines_count = 1  # Number of parallel lines on each side
         self.second_line_spacing = 1.5  # Spacing multiplier for second parallel line
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
+        
+
         
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -392,12 +403,57 @@ class WorkspaceView(QGraphicsView):
         self.scene.addItem(rect)
         return rect
     
+    def remove_overlapping_rectangles(self):
+        """Remove overlapping rectangles, keeping the older one (lower serial number)"""
+        rectangles = []
+        for item in self.scene.items():
+            if isinstance(item, ScalableRectangle):
+                rectangles.append(item)
+        
+        if len(rectangles) < 2:
+            return  # No overlaps possible with less than 2 rectangles
+        
+        rectangles_to_remove = []
+        
+        # Check each rectangle against all others
+        for i, rect1 in enumerate(rectangles):
+            if rect1 in rectangles_to_remove:
+                continue
+                
+            for j, rect2 in enumerate(rectangles):
+                if i >= j or rect2 in rectangles_to_remove:
+                    continue
+                
+                # Check if rectangles overlap using collision detection
+                if rect1.collidesWithItem(rect2):
+                    # Remove the one with the higher serial number (created later)
+                    if rect1.serial_number > rect2.serial_number:
+                        rectangles_to_remove.append(rect1)
+                        break  # No need to check this rectangle further
+                    else:
+                        rectangles_to_remove.append(rect2)
+        
+        # Remove the overlapping rectangles
+        for rect in rectangles_to_remove:
+            self.scene.removeItem(rect)
+        
+        # Force update of all remaining rectangles to clear red coloring
+        for rect in rectangles:
+            if rect not in rectangles_to_remove:
+                rect.update()
+        
+        return len(rectangles_to_remove)
+    
+
+    
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_T:
             # Add rectangle at center of current view when 'T' is pressed
             center = self.mapToScene(self.rect().center())
-            self.add_rectangle(center.x() - self.rectangle_size/2, center.y() - self.rectangle_size/2, 
-                             self.rectangle_size, self.rectangle_size)
+            rect_x = center.x() - self.rectangle_size/2
+            rect_y = center.y() - self.rectangle_size/2
+            
+            self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
         elif event.key() == Qt.Key_R:
             # Rotate selected rectangles counter-clockwise
             self.rotate_selected_rectangles(False)
@@ -426,14 +482,18 @@ class WorkspaceView(QGraphicsView):
             # Add rectangle with regular height and half width when 'P' is pressed
             center = self.mapToScene(self.rect().center())
             half_width = self.rectangle_size / 2
-            self.add_rectangle(center.x() - half_width/2, center.y() - self.rectangle_size/2, 
-                             half_width, self.rectangle_size)
+            rect_x = center.x() - half_width/2
+            rect_y = center.y() - self.rectangle_size/2
+            
+            self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size)
         elif event.key() == Qt.Key_O:
             # Add rectangle with half the size when 'O' is pressed
             center = self.mapToScene(self.rect().center())
             half_size = self.rectangle_size / 2
-            self.add_rectangle(center.x() - half_size/2, center.y() - half_size/2, 
-                             half_size, half_size)
+            rect_x = center.x() - half_size/2
+            rect_y = center.y() - half_size/2
+            
+            self.add_rectangle(rect_x, rect_y, half_size, half_size)
         elif event.key() == Qt.Key_D:
             # Toggle drawing mode
             self.drawing_mode = not self.drawing_mode
@@ -473,6 +533,8 @@ class WorkspaceView(QGraphicsView):
     def set_parallel_mode(self, enabled):
         """Enable or disable parallel line mode"""
         self.parallel_mode = enabled
+    
+
     
     def set_edge_strength(self, strength):
         """Set the edge detection strength (0-100) and regenerate edge detection if needed"""
@@ -573,6 +635,12 @@ class WorkspaceView(QGraphicsView):
             if self.parallel_mode:
                 self.create_parallel_paths()
             
+            # Check if auto overlap removal is enabled
+            if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
+                removed_count = self.remove_overlapping_rectangles()
+                if removed_count > 0 and hasattr(self.main_window, 'status_label'):
+                    self.main_window.status_label.setText(f"Auto-removed {removed_count} overlapping rectangles")
+            
             # Clear the path
             self.drawing_path = []
         else:
@@ -633,7 +701,7 @@ class WorkspaceView(QGraphicsView):
         
         # Find the best points for direction calculation
         # Look for points that are approximately 1-2 rectangle sizes away
-        target_distance = self.rectangle_size * 1.5
+        target_distance = self.rectangle_size * 1.5;
         
         # Search backwards from current position
         back_point = None
@@ -897,8 +965,9 @@ class WorkspaceView(QGraphicsView):
                     angle_degrees = max(-89, min(89, angle_degrees))
                     
                     # Create rectangle at this position
-                    rect = self.add_rectangle(x - self.rectangle_size/2, y - self.rectangle_size/2, 
-                                            self.rectangle_size, self.rectangle_size)
+                    rect_x = x - self.rectangle_size/2
+                    rect_y = y - self.rectangle_size/2
+                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
                     
                     # Rotate the rectangle to match the smooth angle
                     rect.current_rotation = angle_degrees
@@ -926,10 +995,6 @@ class MainWindow(QMainWindow):
         load_bg_btn.clicked.connect(self.load_background)
         toolbar_layout.addWidget(load_bg_btn)
         
-        add_rect_btn = QPushButton("Add Rectangle")
-        add_rect_btn.clicked.connect(self.add_rectangle)
-        toolbar_layout.addWidget(add_rect_btn)
-        
         clear_btn = QPushButton("Clear All")
         clear_btn.clicked.connect(self.clear_all)
         toolbar_layout.addWidget(clear_btn)
@@ -939,12 +1004,12 @@ class MainWindow(QMainWindow):
         self.color_btn.clicked.connect(self.toggle_color_mode)
         toolbar_layout.addWidget(self.color_btn)
         
-        # Add parallel mode button
-        self.parallel_btn = QPushButton("Parallel")
-        self.parallel_btn.setCheckable(True)
-        self.parallel_btn.setChecked(False)
-        self.parallel_btn.clicked.connect(self.toggle_parallel_mode)
-        toolbar_layout.addWidget(self.parallel_btn)
+        # Add overlap removal button
+        self.overlap_btn = QPushButton("Overlap")
+        self.overlap_btn.clicked.connect(self.remove_overlapping_rectangles)
+        toolbar_layout.addWidget(self.overlap_btn)
+        
+
         
         # Add edge detection button
         self.edge_btn = QPushButton("Edge")
@@ -962,56 +1027,6 @@ class MainWindow(QMainWindow):
         self.size_input.setPlaceholderText("Size")
         self.size_input.textChanged.connect(self.update_rectangle_size)
         toolbar_layout.addWidget(self.size_input)
-        
-        # Add spacing input
-        spacing_label = QLabel("Line Spacing:")
-        toolbar_layout.addWidget(spacing_label)
-        
-        self.spacing_input = QLineEdit("1.3")
-        self.spacing_input.setMaximumWidth(80)
-        self.spacing_input.setPlaceholderText("Spacing")
-        self.spacing_input.textChanged.connect(self.update_rectangle_spacing)
-        toolbar_layout.addWidget(self.spacing_input)
-        
-        # Add parallel distance input
-        parallel_distance_label = QLabel("Parallel Distance:")
-        toolbar_layout.addWidget(parallel_distance_label)
-        
-        self.parallel_distance_input = QLineEdit("0.7")
-        self.parallel_distance_input.setMaximumWidth(80)
-        self.parallel_distance_input.setPlaceholderText("Distance")
-        self.parallel_distance_input.textChanged.connect(self.update_parallel_distance)
-        toolbar_layout.addWidget(self.parallel_distance_input)
-        
-        # Add parallel lines count input
-        parallel_lines_label = QLabel("Parallel Lines:")
-        toolbar_layout.addWidget(parallel_lines_label)
-        
-        self.parallel_lines_input = QLineEdit("1")
-        self.parallel_lines_input.setMaximumWidth(80)
-        self.parallel_lines_input.setPlaceholderText("Lines")
-        self.parallel_lines_input.textChanged.connect(self.update_parallel_lines_count)
-        toolbar_layout.addWidget(self.parallel_lines_input)
-        
-        # Add second line spacing input
-        second_line_spacing_label = QLabel("2nd Line Spacing:")
-        toolbar_layout.addWidget(second_line_spacing_label)
-        
-        self.second_line_spacing_input = QLineEdit("1.5")
-        self.second_line_spacing_input.setMaximumWidth(80)
-        self.second_line_spacing_input.setPlaceholderText("Spacing")
-        self.second_line_spacing_input.textChanged.connect(self.update_second_line_spacing)
-        toolbar_layout.addWidget(self.second_line_spacing_input)
-        
-        # Add third line spacing input
-        third_line_spacing_label = QLabel("3rd Line Spacing:")
-        toolbar_layout.addWidget(third_line_spacing_label)
-        
-        self.third_line_spacing_input = QLineEdit("1.7")
-        self.third_line_spacing_input.setMaximumWidth(80)
-        self.third_line_spacing_input.setPlaceholderText("Spacing")
-        self.third_line_spacing_input.textChanged.connect(self.update_third_line_spacing)
-        toolbar_layout.addWidget(self.third_line_spacing_input)
         
         # Add edge strength slider
         edge_strength_label = QLabel("Edge Strength:")
@@ -1037,7 +1052,7 @@ class MainWindow(QMainWindow):
         content_layout = QHBoxLayout()
         
         # Create and add workspace view first
-        self.workspace = WorkspaceView()
+        self.workspace = WorkspaceView(self)
         
         # Create left taskbar (now that workspace exists)
         self.create_left_taskbar()
@@ -1064,316 +1079,25 @@ class MainWindow(QMainWindow):
         # Add initial instructions
         self.add_instructions()
     
-    def toggle_parallel_mode(self):
-        """Toggle parallel line mode"""
-        self.workspace.set_parallel_mode(self.parallel_btn.isChecked())
-        # Update both buttons
-        if self.parallel_btn.isChecked():
-            self.parallel_btn.setText("Parallel: ON")
-            self.right_parallel_btn.setChecked(True)
-            self.right_parallel_btn.setText("Parallel Mode: ON")
-        else:
-            self.parallel_btn.setText("Parallel")
-            self.right_parallel_btn.setChecked(False)
-            self.right_parallel_btn.setText("Parallel Mode: OFF")
-    
-    def create_left_taskbar(self):
-        """Create the left taskbar with tools and controls"""
-        self.left_taskbar = QWidget()
-        self.left_taskbar.setFixedWidth(200)
-        self.left_taskbar.setStyleSheet("background-color: #f0f0f0; border-right: 1px solid #ccc;")
-        
-        taskbar_layout = QVBoxLayout(self.left_taskbar)
-        taskbar_layout.setSpacing(10)
-        taskbar_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Title
-        title_label = QLabel("Tools")
-        title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
-        taskbar_layout.addWidget(title_label)
-        
-        # Separator
-        line = QWidget()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background-color: #ccc;")
-        taskbar_layout.addWidget(line)
-        
-        # Drawing Mode Section
-        drawing_section = QLabel("Drawing Mode")
-        drawing_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 10px;")
-        taskbar_layout.addWidget(drawing_section)
-        
-        # Drawing mode toggle button
-        self.drawing_btn = QPushButton("Drawing: OFF")
-        self.drawing_btn.setCheckable(True)
-        self.drawing_btn.setChecked(False)
-        self.drawing_btn.clicked.connect(self.toggle_drawing_mode)
-        self.drawing_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(self.drawing_btn)
-        
-        # Rectangle Tools Section
-        rect_section = QLabel("Rectangle Tools")
-        rect_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(rect_section)
-        
-        # Quick rectangle buttons
-        rect_btn = QPushButton("Add Rectangle (T)")
-        rect_btn.clicked.connect(self.add_rectangle)
-        rect_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(rect_btn)
-        
-        half_rect_btn = QPushButton("Half Width (P)")
-        half_rect_btn.clicked.connect(self.add_half_width_rectangle)
-        half_rect_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(half_rect_btn)
-        
-        small_rect_btn = QPushButton("Half Size (O)")
-        small_rect_btn.clicked.connect(self.add_small_rectangle)
-        small_rect_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(small_rect_btn)
-        
-        # Navigation Section
-        nav_section = QLabel("Navigation")
-        nav_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(nav_section)
-        
-        # Navigation info
-        nav_info = QLabel("Arrow Keys: Pan\nMouse Wheel: Zoom")
-        nav_info.setStyleSheet("font-size: 10px; color: #666; margin-bottom: 5px;")
-        taskbar_layout.addWidget(nav_info)
-        
-        # Actions Section
-        actions_section = QLabel("Actions")
-        actions_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(actions_section)
-        
-        # Action buttons
-        fill_btn = QPushButton("Fill Selected (C)")
-        fill_btn.clicked.connect(self.fill_selected_rectangles)
-        fill_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(fill_btn)
-        
-        rotate_ccw_btn = QPushButton("Rotate CCW (R)")
-        rotate_ccw_btn.clicked.connect(lambda: self.workspace.rotate_selected_rectangles(False))
-        rotate_ccw_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(rotate_ccw_btn)
-        
-        rotate_cw_btn = QPushButton("Rotate CW (Y)")
-        rotate_cw_btn.clicked.connect(lambda: self.workspace.rotate_selected_rectangles(True))
-        rotate_cw_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(rotate_cw_btn)
-        
-        delete_btn = QPushButton("Delete (Del)")
-        delete_btn.clicked.connect(self.workspace.delete_selected_rectangles)
-        delete_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(delete_btn)
-        
-        # Add stretch to push everything to the top
-        taskbar_layout.addStretch()
-        
-        # Status Section at bottom
-        status_section = QLabel("Status")
-        status_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(status_section)
-        
-        # Status info
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("font-size: 10px; color: #666; margin-bottom: 10px;")
-        taskbar_layout.addWidget(self.status_label)
-    
-    def create_right_taskbar(self):
-        """Create the right taskbar with additional controls and information"""
-        self.right_taskbar = QWidget()
-        self.right_taskbar.setFixedWidth(200)
-        self.right_taskbar.setStyleSheet("background-color: #f0f0f0; border-left: 1px solid #ccc;")
-        
-        taskbar_layout = QVBoxLayout(self.right_taskbar)
-        taskbar_layout.setSpacing(10)
-        taskbar_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Title
-        title_label = QLabel("Settings")
-        title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
-        taskbar_layout.addWidget(title_label)
-        
-        # Separator
-        line = QWidget()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background-color: #ccc;")
-        taskbar_layout.addWidget(line)
-        
-        # Parallel Settings Section
-        parallel_section = QLabel("Parallel Settings")
-        parallel_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 10px;")
-        taskbar_layout.addWidget(parallel_section)
-        
-        # Parallel mode toggle
-        self.right_parallel_btn = QPushButton("Parallel Mode: OFF")
-        self.right_parallel_btn.setCheckable(True)
-        self.right_parallel_btn.setChecked(False)
-        self.right_parallel_btn.clicked.connect(self.toggle_parallel_mode_right)
-        self.right_parallel_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(self.right_parallel_btn)
-        
-        # Parallel lines count
-        lines_count_label = QLabel("Lines Count:")
-        lines_count_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(lines_count_label)
-        
-        self.right_parallel_lines_input = QLineEdit("1")
-        self.right_parallel_lines_input.setMaximumWidth(180)
-        self.right_parallel_lines_input.setPlaceholderText("Number of parallel lines")
-        self.right_parallel_lines_input.textChanged.connect(self.update_parallel_lines_count)
-        taskbar_layout.addWidget(self.right_parallel_lines_input)
-        
-        # Parallel distance
-        distance_label = QLabel("Parallel Distance:")
-        distance_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(distance_label)
-        
-        self.right_parallel_distance_input = QLineEdit("0.7")
-        self.right_parallel_distance_input.setMaximumWidth(180)
-        self.right_parallel_distance_input.setPlaceholderText("Distance multiplier")
-        self.right_parallel_distance_input.textChanged.connect(self.update_parallel_distance)
-        taskbar_layout.addWidget(self.right_parallel_distance_input)
-        
-        # Line Spacing Section
-        spacing_section = QLabel("Line Spacing")
-        spacing_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(spacing_section)
-        
-        # 2nd line spacing
-        second_line_label = QLabel("2nd Line Spacing:")
-        second_line_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(second_line_label)
-        
-        self.right_second_line_input = QLineEdit("1.5")
-        self.right_second_line_input.setMaximumWidth(180)
-        self.right_second_line_input.setPlaceholderText("Second line spacing multiplier")
-        self.right_second_line_input.textChanged.connect(self.update_second_line_spacing)
-        taskbar_layout.addWidget(self.right_second_line_input)
-        
-        # 3rd line spacing
-        third_line_label = QLabel("3rd Line Spacing:")
-        third_line_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(third_line_label)
-        
-        self.right_third_line_input = QLineEdit("1.7")
-        self.right_third_line_input.setMaximumWidth(180)
-        self.right_third_line_input.setPlaceholderText("Third line spacing multiplier")
-        self.right_third_line_input.textChanged.connect(self.update_third_line_spacing)
-        taskbar_layout.addWidget(self.right_third_line_input)
-        
-        # Rectangle Settings Section
-        rect_settings_section = QLabel("Rectangle Settings")
-        rect_settings_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(rect_settings_section)
-        
-        # Rectangle size
-        size_label = QLabel("Rectangle Size:")
-        size_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(size_label)
-        
-        self.right_size_input = QLineEdit("10")
-        self.right_size_input.setMaximumWidth(180)
-        self.right_size_input.setPlaceholderText("Rectangle size in pixels")
-        self.right_size_input.textChanged.connect(self.update_rectangle_size)
-        taskbar_layout.addWidget(self.right_size_input)
-        
-        # Line spacing
-        line_spacing_label = QLabel("Line Spacing:")
-        line_spacing_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(line_spacing_label)
-        
-        self.right_spacing_input = QLineEdit("1.3")
-        self.right_spacing_input.setMaximumWidth(180)
-        self.right_spacing_input.setPlaceholderText("Spacing between rectangles")
-        self.right_spacing_input.textChanged.connect(self.update_rectangle_spacing)
-        taskbar_layout.addWidget(self.right_spacing_input)
-        
-        # Edge Detection Section
-        edge_section = QLabel("Edge Detection")
-        edge_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(edge_section)
-        
-        # Edge mode toggle
-        self.right_edge_btn = QPushButton("Edge Mode: OFF")
-        self.right_edge_btn.setCheckable(True)
-        self.right_edge_btn.setChecked(False)
-        self.right_edge_btn.clicked.connect(self.toggle_edge_mode_right)
-        self.right_edge_btn.setStyleSheet("QPushButton { text-align: left; padding: 5px; }")
-        taskbar_layout.addWidget(self.right_edge_btn)
-        
-        # Edge strength
-        edge_strength_label = QLabel("Edge Strength:")
-        edge_strength_label.setStyleSheet("font-size: 10px; color: #666;")
-        taskbar_layout.addWidget(edge_strength_label)
-        
-        self.right_edge_strength_slider = QSlider(Qt.Horizontal)
-        self.right_edge_strength_slider.setMinimum(0)
-        self.right_edge_strength_slider.setMaximum(100)
-        self.right_edge_strength_slider.setValue(50)
-        self.right_edge_strength_slider.setMaximumWidth(180)
-        self.right_edge_strength_slider.valueChanged.connect(self.update_edge_strength)
-        taskbar_layout.addWidget(self.right_edge_strength_slider)
-        
-        # Edge strength value
-        self.right_edge_strength_value_label = QLabel("50")
-        self.right_edge_strength_value_label.setStyleSheet("font-size: 10px; color: #666; text-align: center;")
-        taskbar_layout.addWidget(self.right_edge_strength_value_label)
-        
-        # Add stretch to push everything to the top
-        taskbar_layout.addStretch()
-        
-        # Info Section at bottom
-        info_section = QLabel("Information")
-        info_section.setStyleSheet("font-size: 12px; font-weight: bold; color: #555; margin-top: 15px;")
-        taskbar_layout.addWidget(info_section)
-        
-        # Info text
-        info_text = QLabel("Press D to toggle drawing mode.\nPress T to add rectangle.\nPress C to fill selected.")
-        info_text.setStyleSheet("font-size: 9px; color: #666; margin-bottom: 10px;")
-        info_text.setWordWrap(True)
-        taskbar_layout.addWidget(info_text)
-    
     def toggle_parallel_mode_right(self):
         """Toggle parallel mode from right taskbar"""
         self.workspace.set_parallel_mode(self.right_parallel_btn.isChecked())
-        # Update both buttons
+        # Update button text
         if self.right_parallel_btn.isChecked():
             self.right_parallel_btn.setText("Parallel Mode: ON")
-            self.parallel_btn.setChecked(True)
-            self.parallel_btn.setText("Parallel: ON")
         else:
             self.right_parallel_btn.setText("Parallel Mode: OFF")
-            self.parallel_btn.setChecked(False)
-            self.parallel_btn.setText("Parallel")
-    
-    def toggle_edge_mode_right(self):
-        """Toggle edge mode from right taskbar"""
-        edge_mode = self.workspace.toggle_edge_mode()
-        # Update both buttons
-        if edge_mode:
-            self.right_edge_btn.setText("Edge Mode: ON")
-            self.edge_btn.setChecked(True)
-            self.edge_btn.setText("Edge: ON")
-        else:
-            self.right_edge_btn.setText("Edge Mode: OFF")
-            self.edge_btn.setChecked(False)
-            self.edge_btn.setText("Edge")
     
     def toggle_edge_mode(self):
         """Toggle edge detection mode"""
         edge_mode = self.workspace.toggle_edge_mode()
-        # Update both buttons
+        # Update top toolbar button only
         if edge_mode:
             self.edge_btn.setText("Edge: ON")
-            self.right_edge_btn.setChecked(True)
-            self.right_edge_btn.setText("Edge Mode: ON")
         else:
             self.edge_btn.setText("Edge")
-            self.right_edge_btn.setChecked(False)
-            self.right_edge_btn.setText("Edge Mode: OFF")
+    
+
     
     def create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -1420,7 +1144,10 @@ class MainWindow(QMainWindow):
         # Add rectangle at center of current view
         center = self.workspace.mapToScene(self.workspace.rect().center())
         size = self.workspace.rectangle_size
-        self.workspace.add_rectangle(center.x() - size/2, center.y() - size/2, size, size)
+        rect_x = center.x() - size/2
+        rect_y = center.y() - size/2
+        
+        self.workspace.add_rectangle(rect_x, rect_y, size, size)
     
     def update_rectangle_size(self, text):
         """Update the rectangle size based on input"""
@@ -1443,8 +1170,7 @@ class MainWindow(QMainWindow):
             # Clamp spacing between 0.1 and 10.0
             spacing = max(0.1, min(10.0, spacing))
             self.workspace.set_rectangle_spacing(spacing)
-            # Sync both inputs
-            self.spacing_input.setText(str(spacing))
+            # Sync right input only
             self.right_spacing_input.setText(str(spacing))
         except ValueError:
             # If invalid input, keep current spacing
@@ -1457,8 +1183,7 @@ class MainWindow(QMainWindow):
             # Clamp distance between 0.5 and 10.0
             distance = max(0.5, min(10.0, distance))
             self.workspace.set_parallel_distance(distance)
-            # Sync both inputs
-            self.parallel_distance_input.setText(str(distance))
+            # Sync right input only
             self.right_parallel_distance_input.setText(str(distance))
         except ValueError:
             # If invalid input, keep current distance
@@ -1471,8 +1196,7 @@ class MainWindow(QMainWindow):
             # Clamp count between 1 and 10
             count = max(1, min(10, count))
             self.workspace.set_parallel_lines_count(count)
-            # Sync both inputs
-            self.parallel_lines_input.setText(str(count))
+            # Sync right input only
             self.right_parallel_lines_input.setText(str(count))
         except ValueError:
             # If invalid input, keep current count
@@ -1485,8 +1209,7 @@ class MainWindow(QMainWindow):
             # Clamp spacing between 1.0 and 3.0
             spacing = max(1.0, min(3.0, spacing))
             self.workspace.set_second_line_spacing(spacing)
-            # Sync both inputs
-            self.second_line_spacing_input.setText(str(spacing))
+            # Sync right input only
             self.right_second_line_input.setText(str(spacing))
         except ValueError:
             # If invalid input, keep current spacing
@@ -1499,8 +1222,7 @@ class MainWindow(QMainWindow):
             # Clamp spacing between 1.0 and 3.0
             spacing = max(1.0, min(3.0, spacing))
             self.workspace.set_third_line_spacing(spacing)
-            # Sync both inputs
-            self.third_line_spacing_input.setText(str(spacing))
+            # Sync right input only
             self.right_third_line_input.setText(str(spacing))
         except ValueError:
             # If invalid input, keep current spacing
@@ -1509,10 +1231,8 @@ class MainWindow(QMainWindow):
     def update_edge_strength(self, value):
         """Update the edge detection strength based on slider value"""
         self.edge_strength_value_label.setText(str(value))
-        self.right_edge_strength_value_label.setText(str(value))
-        # Sync both sliders
+        # Sync top toolbar slider only
         self.edge_strength_slider.setValue(value)
-        self.right_edge_strength_slider.setValue(value)
         self.workspace.set_edge_strength(value)
     
     def toggle_drawing_mode(self):
@@ -1533,16 +1253,20 @@ class MainWindow(QMainWindow):
         """Add rectangle with half width"""
         center = self.workspace.mapToScene(self.workspace.rect().center())
         half_width = self.workspace.rectangle_size / 2
-        self.workspace.add_rectangle(center.x() - half_width/2, center.y() - self.workspace.rectangle_size/2, 
-                                   half_width, self.workspace.rectangle_size)
+        rect_x = center.x() - half_width/2
+        rect_y = center.y() - self.workspace.rectangle_size/2
+        
+        self.workspace.add_rectangle(rect_x, rect_y, half_width, self.workspace.rectangle_size)
         self.status_label.setText("Added half-width rectangle")
     
     def add_small_rectangle(self):
         """Add rectangle with half size"""
         center = self.workspace.mapToScene(self.workspace.rect().center())
         half_size = self.workspace.rectangle_size / 2
-        self.workspace.add_rectangle(center.x() - half_size/2, center.y() - half_size/2, 
-                                   half_size, half_size)
+        rect_x = center.x() - half_size/2
+        rect_y = center.y() - half_size/2
+        
+        self.workspace.add_rectangle(rect_x, rect_y, half_size, half_size)
         self.status_label.setText("Added small rectangle")
     
     def fill_selected_rectangles(self):
@@ -1576,6 +1300,176 @@ class MainWindow(QMainWindow):
             for rect in rectangles:
                 rect.set_transparent()
             self.color_btn.setText("Color")
+    
+    def remove_overlapping_rectangles(self):
+        """Remove overlapping rectangles, keeping the older ones"""
+        removed_count = self.workspace.remove_overlapping_rectangles()
+        if removed_count > 0:
+            self.status_label.setText(f"Removed {removed_count} overlapping rectangles")
+        else:
+            self.status_label.setText("No overlapping rectangles found")
+    
+    def create_left_taskbar(self):
+        """Create the left taskbar with drawing tools"""
+        from PyQt5.QtWidgets import QFrame
+        
+        # Create left taskbar frame
+        self.left_taskbar = QFrame()
+        self.left_taskbar.setFrameStyle(QFrame.StyledPanel)
+        self.left_taskbar.setMaximumWidth(200)
+        self.left_taskbar.setMinimumWidth(200)
+        
+        # Create layout for left taskbar
+        left_layout = QVBoxLayout(self.left_taskbar)
+        
+        # Add rectangle tools section
+        rect_tools_label = QLabel("Rectangle Tools")
+        rect_tools_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        left_layout.addWidget(rect_tools_label)
+        
+        # Add rectangle buttons
+        add_rect_btn = QPushButton("Add Rectangle (T)")
+        add_rect_btn.clicked.connect(self.add_rectangle)
+        left_layout.addWidget(add_rect_btn)
+        
+        half_width_btn = QPushButton("Half Width (P)")
+        half_width_btn.clicked.connect(self.add_half_width_rectangle)
+        left_layout.addWidget(half_width_btn)
+        
+        small_rect_btn = QPushButton("Small Rectangle (O)")
+        small_rect_btn.clicked.connect(self.add_small_rectangle)
+        left_layout.addWidget(small_rect_btn)
+        
+        # Add rectangle actions section
+        actions_label = QLabel("Rectangle Actions")
+        actions_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        left_layout.addWidget(actions_label)
+        
+        fill_btn = QPushButton("Fill Selected (C)")
+        fill_btn.clicked.connect(self.fill_selected_rectangles)
+        left_layout.addWidget(fill_btn)
+        
+        # Add status label
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("font-size: 12px; color: gray; margin: 10px 0px;")
+        left_layout.addWidget(self.status_label)
+        
+        # Add stretch to push everything to the top
+        left_layout.addStretch()
+    
+    def create_right_taskbar(self):
+        """Create the right taskbar with settings and controls"""
+        from PyQt5.QtWidgets import QFrame
+        
+        # Create right taskbar frame
+        self.right_taskbar = QFrame()
+        self.right_taskbar.setFrameStyle(QFrame.StyledPanel)
+        self.right_taskbar.setMaximumWidth(250)
+        self.right_taskbar.setMinimumWidth(250)
+        
+        # Create layout for right taskbar
+        right_layout = QVBoxLayout(self.right_taskbar)
+        
+        # Basic Settings Section
+        basic_settings_label = QLabel("Basic Settings")
+        basic_settings_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        right_layout.addWidget(basic_settings_label)
+        
+        # Add drawing mode toggle
+        self.drawing_btn = QPushButton("Drawing: OFF")
+        self.drawing_btn.setCheckable(True)
+        self.drawing_btn.setChecked(False)
+        self.drawing_btn.clicked.connect(self.toggle_drawing_mode)
+        right_layout.addWidget(self.drawing_btn)
+        
+        # Rectangle size input
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Rectangle Size:"))
+        self.right_size_input = QLineEdit("10")
+        self.right_size_input.setMaximumWidth(80)
+        self.right_size_input.setPlaceholderText("Size")
+        self.right_size_input.textChanged.connect(self.update_rectangle_size)
+        size_layout.addWidget(self.right_size_input)
+        right_layout.addLayout(size_layout)
+        
+        # Auto-cleanup checkbox
+        self.auto_overlap_checkbox = QPushButton("Auto Remove Overlaps: OFF")
+        self.auto_overlap_checkbox.setCheckable(True)
+        self.auto_overlap_checkbox.setChecked(False)
+        self.auto_overlap_checkbox.clicked.connect(self.toggle_auto_overlap)
+        right_layout.addWidget(self.auto_overlap_checkbox)
+        
+        # Parallel Settings Section
+        parallel_section_label = QLabel("Parallel Settings")
+        parallel_section_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        right_layout.addWidget(parallel_section_label)
+        
+        # Parallel mode toggle
+        self.right_parallel_btn = QPushButton("Parallel Mode: OFF")
+        self.right_parallel_btn.setCheckable(True)
+        self.right_parallel_btn.setChecked(False)
+        self.right_parallel_btn.clicked.connect(self.toggle_parallel_mode_right)
+        right_layout.addWidget(self.right_parallel_btn)
+        
+        # Parallel distance input
+        parallel_distance_layout = QHBoxLayout()
+        parallel_distance_layout.addWidget(QLabel("Parallel Distance:"))
+        self.right_parallel_distance_input = QLineEdit("0.7")
+        self.right_parallel_distance_input.setMaximumWidth(80)
+        self.right_parallel_distance_input.setPlaceholderText("Distance")
+        self.right_parallel_distance_input.textChanged.connect(self.update_parallel_distance)
+        parallel_distance_layout.addWidget(self.right_parallel_distance_input)
+        right_layout.addLayout(parallel_distance_layout)
+        
+        # Parallel lines count input
+        parallel_lines_layout = QHBoxLayout()
+        parallel_lines_layout.addWidget(QLabel("Parallel Lines:"))
+        self.right_parallel_lines_input = QLineEdit("1")
+        self.right_parallel_lines_input.setMaximumWidth(80)
+        self.right_parallel_lines_input.setPlaceholderText("Count")
+        self.right_parallel_lines_input.textChanged.connect(self.update_parallel_lines_count)
+        parallel_lines_layout.addWidget(self.right_parallel_lines_input)
+        right_layout.addLayout(parallel_lines_layout)
+        
+        # Rectangle spacing input
+        spacing_layout = QHBoxLayout()
+        spacing_layout.addWidget(QLabel("Line Spacing:"))
+        self.right_spacing_input = QLineEdit("1.3")
+        self.right_spacing_input.setMaximumWidth(80)
+        self.right_spacing_input.setPlaceholderText("Spacing")
+        self.right_spacing_input.textChanged.connect(self.update_rectangle_spacing)
+        spacing_layout.addWidget(self.right_spacing_input)
+        right_layout.addLayout(spacing_layout)
+        
+        # Second line spacing input
+        second_line_layout = QHBoxLayout()
+        second_line_layout.addWidget(QLabel("2nd Line Spacing:"))
+        self.right_second_line_input = QLineEdit("1.5")
+        self.right_second_line_input.setMaximumWidth(80)
+        self.right_second_line_input.setPlaceholderText("Spacing")
+        self.right_second_line_input.textChanged.connect(self.update_second_line_spacing)
+        second_line_layout.addWidget(self.right_second_line_input)
+        right_layout.addLayout(second_line_layout)
+        
+        # Third line spacing input
+        third_line_layout = QHBoxLayout()
+        third_line_layout.addWidget(QLabel("3rd Line Spacing:"))
+        self.right_third_line_input = QLineEdit("1.7")
+        self.right_third_line_input.setMaximumWidth(80)
+        self.right_third_line_input.setPlaceholderText("Spacing")
+        self.right_third_line_input.textChanged.connect(self.update_third_line_spacing)
+        third_line_layout.addWidget(self.right_third_line_input)
+        right_layout.addLayout(third_line_layout)
+        
+        # Add stretch to push everything to the top
+        right_layout.addStretch()
+
+    def toggle_auto_overlap(self):
+        """Toggle auto overlap removal mode"""
+        if self.auto_overlap_checkbox.isChecked():
+            self.auto_overlap_checkbox.setText("Auto Remove Overlaps: ON")
+        else:
+            self.auto_overlap_checkbox.setText("Auto Remove Overlaps: OFF")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
