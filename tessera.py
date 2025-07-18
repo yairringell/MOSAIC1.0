@@ -247,12 +247,29 @@ class WorkspaceView(QGraphicsView):
         self.fourth_line_spacing = 1.8  # Spacing multiplier for fourth parallel line
         self.fifth_line_spacing = 1.85  # Spacing multiplier for fifth parallel line
         
+        # Edge mode variables - separate from parallel mode
+        self.edge_distance_multiplier = 0.6  # Distance multiplier for edge mode side lines
+        self.edge_lines_count = 2  # Number of side lines on each side in edge mode
+        self.edge_first_line_spacing = 1.5  # Spacing multiplier for first edge side line
+        self.edge_second_line_spacing = 1.8  # Spacing multiplier for second edge side line
+        self.edge_third_line_spacing = 2.0  # Spacing multiplier for third edge side line
+        self.edge_fourth_line_spacing = 2.0  # Spacing multiplier for fourth edge side line
+        self.edge_fifth_line_spacing = 2.0  # Spacing multiplier for fifth edge side line
+        
         # Circle mode variables
         self.circle_mode = False  # Circle drawing mode
         self.circle_radius = 7  # Number of rectangles in circle radius
         
         # Half rectangle mode
         self.half_rectangle_mode = False  # Half rectangle mode
+        
+        # Erase mode variables
+        self.erase_mode = False  # Erase mode
+        self.is_erasing = False  # Track if currently erasing with drag
+        self.erased_rectangles = []  # Track rectangles erased in current operation
+        
+        # Edge mode variables
+        self.edge_mode = False  # Edge mode for drawing central half rectangles with regular rectangles on sides
         
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
@@ -262,6 +279,9 @@ class WorkspaceView(QGraphicsView):
         
         # Create circle cursor for circle mode
         self.circle_cursor = self.create_circle_cursor()
+        
+        # Create erase cursor for erase mode
+        self.erase_cursor = self.create_erase_cursor()
         
         # Set initial cursor
         self.setCursor(Qt.ArrowCursor)
@@ -299,6 +319,32 @@ class WorkspaceView(QGraphicsView):
         painter.end()
         
         # Create cursor with the circle pixmap, hotspot at center
+        cursor = QCursor(pixmap, size//2, size//2)
+        return cursor
+    
+    def create_erase_cursor(self):
+        """Create a small green frame cursor for erase mode"""
+        # Create a 15x15 pixmap for the erase cursor
+        size = 15
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)  # Transparent background
+        
+        # Create painter to draw the frame
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Draw a small green frame outline
+        pen = QPen(QColor(0, 255, 0), 2)  # Green color, 2px width
+        painter.setPen(pen)
+        painter.setBrush(QBrush(Qt.transparent))
+        
+        # Draw rectangle frame with some margin from edges
+        margin = 2
+        painter.drawRect(margin, margin, size - 2*margin, size - 2*margin)
+        
+        painter.end()
+        
+        # Create cursor with the frame pixmap, hotspot at center
         cursor = QCursor(pixmap, size//2, size//2)
         return cursor
         
@@ -618,6 +664,34 @@ class WorkspaceView(QGraphicsView):
         """Set the spacing multiplier for the fifth parallel line"""
         self.fifth_line_spacing = spacing
     
+    def set_edge_distance(self, distance):
+        """Set the distance multiplier for edge mode side lines"""
+        self.edge_distance_multiplier = distance
+    
+    def set_edge_lines_count(self, count):
+        """Set the number of side lines on each side in edge mode"""
+        self.edge_lines_count = count
+    
+    def set_edge_first_line_spacing(self, spacing):
+        """Set the spacing multiplier for the first edge side line"""
+        self.edge_first_line_spacing = spacing
+    
+    def set_edge_second_line_spacing(self, spacing):
+        """Set the spacing multiplier for the second edge side line"""
+        self.edge_second_line_spacing = spacing
+    
+    def set_edge_third_line_spacing(self, spacing):
+        """Set the spacing multiplier for the third edge side line"""
+        self.edge_third_line_spacing = spacing
+    
+    def set_edge_fourth_line_spacing(self, spacing):
+        """Set the spacing multiplier for the fourth edge side line"""
+        self.edge_fourth_line_spacing = spacing
+    
+    def set_edge_fifth_line_spacing(self, spacing):
+        """Set the spacing multiplier for the fifth edge side line"""
+        self.edge_fifth_line_spacing = spacing
+    
     def set_parallel_mode(self, enabled):
         """Enable or disable parallel line mode"""
         self.parallel_mode = enabled
@@ -639,6 +713,59 @@ class WorkspaceView(QGraphicsView):
     def set_half_rectangle_mode(self, enabled):
         """Enable or disable half rectangle mode"""
         self.half_rectangle_mode = enabled
+    
+    def set_erase_mode(self, enabled):
+        """Enable or disable erase mode"""
+        self.erase_mode = enabled
+        
+        # Update cursor based on erase mode
+        if self.erase_mode:
+            self.setCursor(self.erase_cursor)
+        else:
+            # Reset to appropriate cursor based on current mode
+            if self.circle_mode:
+                self.setCursor(self.circle_cursor)
+            elif self.drawing_mode:
+                self.setCursor(self.drawing_cursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+    
+    def set_edge_mode(self, enabled):
+        """Enable or disable edge mode"""
+        self.edge_mode = enabled
+        
+        # Edge mode uses the same cursor as drawing mode
+        if self.edge_mode:
+            self.setCursor(self.drawing_cursor)
+        else:
+            # Reset to appropriate cursor based on current mode
+            if self.erase_mode:
+                self.setCursor(self.erase_cursor)
+            elif self.circle_mode:
+                self.setCursor(self.circle_cursor)
+            elif self.drawing_mode:
+                self.setCursor(self.drawing_cursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+    
+    def erase_rectangles_at_position(self, pos):
+        """Erase any rectangles at the given position"""
+        # Get the scene position
+        scene_pos = self.mapToScene(pos)
+        
+        # Find rectangles at this position
+        items_at_pos = self.scene.items(scene_pos)
+        rectangles_to_remove = []
+        
+        for item in items_at_pos:
+            if isinstance(item, ScalableRectangle):
+                rectangles_to_remove.append(item)
+        
+        # Remove the rectangles
+        for rect in rectangles_to_remove:
+            self.scene.removeItem(rect)
+        
+        return rectangles_to_remove
     
 
     
@@ -676,7 +803,13 @@ class WorkspaceView(QGraphicsView):
         v_scroll.setValue(v_scroll.value() + dy)
     
     def mousePressEvent(self, event):
-        if self.circle_mode and event.button() == Qt.LeftButton:
+        if self.erase_mode and event.button() == Qt.LeftButton:
+            # Start erasing on left click
+            self.is_erasing = True
+            self.erased_rectangles = []  # Track erased rectangles for undo
+            erased = self.erase_rectangles_at_position(event.pos())
+            self.erased_rectangles.extend(erased)
+        elif self.circle_mode and event.button() == Qt.LeftButton:
             # Track rectangles before creating circle
             rectangles_before = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
             
@@ -690,7 +823,7 @@ class WorkspaceView(QGraphicsView):
             
             if new_rectangles and self.main_window:
                 self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
-        elif self.drawing_mode and event.button() == Qt.LeftButton:
+        elif (self.drawing_mode or self.edge_mode) and event.button() == Qt.LeftButton:
             # Start drawing a path
             self.is_drawing = True
             self.drawing_path = []
@@ -707,7 +840,11 @@ class WorkspaceView(QGraphicsView):
             super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
-        if self.drawing_mode and self.is_drawing and self.current_path_item:
+        if self.erase_mode and self.is_erasing:
+            # Continue erasing while dragging
+            erased = self.erase_rectangles_at_position(event.pos())
+            self.erased_rectangles.extend(erased)
+        elif (self.drawing_mode or self.edge_mode) and self.is_drawing and self.current_path_item:
             # Continue drawing the path
             current_pos = self.mapToScene(event.pos())
             self.drawing_path.append(current_pos)
@@ -723,7 +860,13 @@ class WorkspaceView(QGraphicsView):
             super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
-        if self.drawing_mode and event.button() == Qt.LeftButton and self.is_drawing:
+        if self.erase_mode and event.button() == Qt.LeftButton and self.is_erasing:
+            # Stop erasing and add to undo stack
+            self.is_erasing = False
+            if self.erased_rectangles and self.main_window:
+                self.main_window.add_to_undo_stack('erase_rectangles', self.erased_rectangles)
+            self.erased_rectangles = []
+        elif (self.drawing_mode or self.edge_mode) and event.button() == Qt.LeftButton and self.is_drawing:
             # Finish drawing and create rectangles along the path
             self.is_drawing = False
             
@@ -771,8 +914,11 @@ class WorkspaceView(QGraphicsView):
         # Smooth the path by averaging neighboring points
         self.smoothed_path = self.smooth_path(self.drawing_path)
         
-        # Only create rectangles on the main line if parallel mode is NOT enabled
-        if not self.parallel_mode:
+        if self.edge_mode:
+            # Edge mode: create central half rectangles and regular rectangles on sides
+            self.create_edge_rectangles_along_path(self.smoothed_path)
+        elif not self.parallel_mode:
+            # Only create rectangles on the main line if parallel mode is NOT enabled
             # Use half rectangles if half rectangle mode is enabled
             if self.half_rectangle_mode:
                 self.create_half_rectangles_along_path(self.smoothed_path)
@@ -1145,6 +1291,126 @@ class WorkspaceView(QGraphicsView):
             
             current_distance += segment_distance
 
+    def create_edge_rectangles_along_path(self, path):
+        """Create edge rectangles: central half rectangles with multiple regular rectangles on both sides using dedicated edge variables"""
+        if len(path) < 2:
+            return
+        
+        # Calculate spacing between rectangles based on rectangle size
+        spacing = self.rectangle_size * self.rectangle_spacing
+        
+        # Calculate base side distance using edge-specific distance multiplier
+        base_edge_distance = self.rectangle_size * self.edge_distance_multiplier
+        
+        # First, create a resampled version of the path with consistent point spacing
+        resampled_path = self.resample_path_by_distance(path)
+        
+        # Create center half rectangles along the main path
+        self.create_half_rectangles_along_path(resampled_path)
+        
+        # Create multiple side paths using edge-specific variables
+        # Calculate cumulative distances to prevent overlaps
+        edge_line_distances = []
+        
+        for line_index in range(1, self.edge_lines_count + 1):
+            if line_index == 1:
+                # First edge line: use edge-specific first line spacing
+                edge_distance = base_edge_distance * self.edge_first_line_spacing
+            elif line_index == 2:
+                # Second edge line: use cumulative spacing
+                prev_distance = edge_line_distances[0]  # First line distance
+                spacing_addition = base_edge_distance * self.edge_second_line_spacing
+                edge_distance = prev_distance + spacing_addition
+            elif line_index == 3:
+                # Third edge line: use cumulative spacing
+                prev_distance = edge_line_distances[1]  # Second line distance
+                spacing_addition = base_edge_distance * self.edge_third_line_spacing
+                edge_distance = prev_distance + spacing_addition
+            elif line_index == 4:
+                # Fourth edge line: use cumulative spacing
+                prev_distance = edge_line_distances[2]  # Third line distance
+                spacing_addition = base_edge_distance * self.edge_fourth_line_spacing
+                edge_distance = prev_distance + spacing_addition
+            elif line_index == 5:
+                # Fifth edge line: use cumulative spacing
+                prev_distance = edge_line_distances[3]  # Fourth line distance
+                spacing_addition = base_edge_distance * self.edge_fifth_line_spacing
+                edge_distance = prev_distance + spacing_addition
+            else:
+                # Additional edge lines (6+): use consistent spacing
+                prev_distance = edge_line_distances[line_index - 2]  # Previous line distance
+                spacing_addition = base_edge_distance * 1.5  # Default spacing for additional lines
+                edge_distance = prev_distance + spacing_addition
+            
+            # Store this distance for next iteration
+            edge_line_distances.append(edge_distance)
+            
+            # Create parallel paths by offsetting each point of the resampled path
+            left_edge_path = []
+            right_edge_path = []
+            
+            # For each point in the resampled path, calculate the perpendicular offset
+            for i in range(len(resampled_path)):
+                current_point = resampled_path[i]
+                
+                # Calculate the direction at this point
+                if i == 0:
+                    # First point: use direction to next point
+                    next_point = resampled_path[i + 1]
+                    direction_x = next_point.x() - current_point.x()
+                    direction_y = next_point.y() - current_point.y()
+                elif i == len(resampled_path) - 1:
+                    # Last point: use direction from previous point
+                    prev_point = resampled_path[i - 1]
+                    direction_x = current_point.x() - prev_point.x()
+                    direction_y = current_point.y() - prev_point.y()
+                else:
+                    # Middle points: use average direction of neighboring segments
+                    prev_point = resampled_path[i - 1]
+                    next_point = resampled_path[i + 1]
+                    
+                    # Direction from previous to current
+                    dir1_x = current_point.x() - prev_point.x()
+                    dir1_y = current_point.y() - prev_point.y()
+                    
+                    # Direction from current to next
+                    dir2_x = next_point.x() - current_point.x()
+                    dir2_y = next_point.y() - current_point.y()
+                    
+                    # Average the two directions for smoother curves
+                    direction_x = (dir1_x + dir2_x) / 2
+                    direction_y = (dir1_y + dir2_y) / 2
+                
+                # Normalize the direction vector
+                length = (direction_x * direction_x + direction_y * direction_y) ** 0.5
+                if length > 0:
+                    unit_x = direction_x / length
+                    unit_y = direction_y / length
+                    
+                    # Calculate perpendicular vector (90 degrees rotated)
+                    perp_x = -unit_y
+                    perp_y = unit_x
+                    
+                    # Calculate edge parallel points
+                    left_edge_point = QPointF(
+                        current_point.x() + perp_x * edge_distance,
+                        current_point.y() + perp_y * edge_distance
+                    )
+                    right_edge_point = QPointF(
+                        current_point.x() - perp_x * edge_distance,
+                        current_point.y() - perp_y * edge_distance
+                    )
+                    
+                    left_edge_path.append(left_edge_point)
+                    right_edge_path.append(right_edge_point)
+            
+            # Create rectangles along the edge paths using the same algorithm as main line
+            if left_edge_path:
+                self.create_rectangles_along_specific_path(left_edge_path)
+                
+            if right_edge_path:
+                self.create_rectangles_along_specific_path(right_edge_path)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1356,10 +1622,43 @@ class MainWindow(QMainWindow):
             # If invalid input, keep current count
             pass
     
+    def update_edge_distance(self, text):
+        """Update the edge distance based on input"""
+        try:
+            distance = float(text) if text else 0.8
+            # Clamp distance between 0.1 and 10.0
+            distance = max(0.1, min(10.0, distance))
+            self.workspace.set_edge_distance(distance)
+            self.edge_distance_input.setText(str(distance))
+        except ValueError:
+            # If invalid input, keep current distance
+            pass
+    
+    def update_edge_lines_count(self, text):
+        """Update the edge lines count based on input"""
+        try:
+            count = int(text) if text else 2
+            # Clamp count between 1 and 10
+            count = max(1, min(10, count))
+            self.workspace.set_edge_lines_count(count)
+            self.edge_lines_input.setText(str(count))
+        except ValueError:
+            # If invalid input, keep current count
+            pass
+    
     def toggle_drawing_mode(self):
         """Toggle drawing mode from the taskbar"""
         self.workspace.drawing_mode = self.drawing_btn.isChecked()
         if self.workspace.drawing_mode:
+            # Turn off erase mode when drawing mode is enabled
+            if self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
+            # Turn off edge mode when drawing mode is enabled
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
+            
             self.workspace.setDragMode(QGraphicsView.NoDrag)
             # Use circle cursor if circle mode is on, otherwise use drawing cursor
             if self.workspace.circle_mode:
@@ -1463,6 +1762,11 @@ class MainWindow(QMainWindow):
                 for rect in last_action['rectangles']:
                     self.workspace.scene.addItem(rect)
                 self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} rectangles")
+            elif last_action['type'] == 'erase_rectangles':
+                # Restore the rectangles that were erased
+                for rect in last_action['rectangles']:
+                    self.workspace.scene.addItem(rect)
+                self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} erased rectangles")
         else:
             self.status_label.setText("Nothing to undo")
     
@@ -1591,6 +1895,45 @@ class MainWindow(QMainWindow):
         circle_count_layout.addWidget(self.right_circle_count_input)
         right_layout.addLayout(circle_count_layout)
         
+        # Erase mode toggle
+        self.erase_btn = QPushButton("Erase Mode: OFF")
+        self.erase_btn.setCheckable(True)
+        self.erase_btn.setChecked(False)
+        self.erase_btn.clicked.connect(self.toggle_erase_mode)
+        right_layout.addWidget(self.erase_btn)
+        
+        # Edge mode toggle
+        self.edge_btn = QPushButton("Edge Mode: OFF")
+        self.edge_btn.setCheckable(True)
+        self.edge_btn.setChecked(False)
+        self.edge_btn.clicked.connect(self.toggle_edge_mode)
+        right_layout.addWidget(self.edge_btn)
+        
+        # Edge Settings Section
+        edge_section_label = QLabel("Edge Settings")
+        edge_section_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        right_layout.addWidget(edge_section_label)
+        
+        # Edge distance input
+        edge_distance_layout = QHBoxLayout()
+        edge_distance_layout.addWidget(QLabel("Edge Distance:"))
+        self.edge_distance_input = QLineEdit("0.8")
+        self.edge_distance_input.setMaximumWidth(80)
+        self.edge_distance_input.setPlaceholderText("Distance")
+        self.edge_distance_input.textChanged.connect(self.update_edge_distance)
+        edge_distance_layout.addWidget(self.edge_distance_input)
+        right_layout.addLayout(edge_distance_layout)
+        
+        # Edge lines count input
+        edge_lines_layout = QHBoxLayout()
+        edge_lines_layout.addWidget(QLabel("Edge Lines:"))
+        self.edge_lines_input = QLineEdit("2")
+        self.edge_lines_input.setMaximumWidth(80)
+        self.edge_lines_input.setPlaceholderText("Count")
+        self.edge_lines_input.textChanged.connect(self.update_edge_lines_count)
+        edge_lines_layout.addWidget(self.edge_lines_input)
+        right_layout.addLayout(edge_lines_layout)
+        
         # Parallel Settings Section
         parallel_section_label = QLabel("Parallel Settings")
         parallel_section_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
@@ -1665,9 +2008,53 @@ class MainWindow(QMainWindow):
         """Toggle circle mode"""
         self.workspace.set_circle_mode(self.circle_btn.isChecked())
         if self.circle_btn.isChecked():
+            # Turn off erase mode when circle mode is enabled
+            if self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
+            # Turn off edge mode when circle mode is enabled
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
             self.circle_btn.setText("Circle Mode: ON")
         else:
             self.circle_btn.setText("Circle Mode: OFF")
+    
+    def toggle_erase_mode(self):
+        """Toggle erase mode"""
+        self.workspace.set_erase_mode(self.erase_btn.isChecked())
+        if self.erase_btn.isChecked():
+            self.erase_btn.setText("Erase Mode: ON")
+            # Turn off other modes when erase mode is enabled
+            if self.drawing_btn.isChecked():
+                self.drawing_btn.setChecked(False)
+                self.toggle_drawing_mode()
+            if self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
+        else:
+            self.erase_btn.setText("Erase Mode: OFF")
+    
+    def toggle_edge_mode(self):
+        """Toggle edge mode"""
+        self.workspace.set_edge_mode(self.edge_btn.isChecked())
+        if self.edge_btn.isChecked():
+            self.edge_btn.setText("Edge Mode: ON")
+            # Turn off other modes when edge mode is enabled
+            if self.drawing_btn.isChecked():
+                self.drawing_btn.setChecked(False)
+                self.toggle_drawing_mode()
+            if self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
+            if self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
+        else:
+            self.edge_btn.setText("Edge Mode: OFF")
     
     def toggle_half_rectangle_mode(self):
         """Toggle half rectangle mode"""
@@ -1736,6 +2123,8 @@ class MainWindow(QMainWindow):
         palette_widget.setContentsMargins(0, 0, 0, 0)
         palette_widget.setStyleSheet("QWidget { margin: 0px; padding: 0px; }")
         palette_widget.setFixedSize(100, 100)  # Fixed size: 4 columns × 25px = 100px, 4 rows × 25px = 100px
+        
+        # Add the palette to the layout
         layout.addWidget(palette_widget)
     
     def select_color(self, color_hex):
@@ -1744,6 +2133,7 @@ class MainWindow(QMainWindow):
         self.selected_color_display.setStyleSheet(f"border: 1px solid black; background-color: {color_hex};")
 
 if __name__ == "__main__":
+    import sys
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
