@@ -12,7 +12,7 @@ class ScalableRectangle(QGraphicsRectItem):
     # Class variable to track rectangle creation order
     _next_serial_number = 1
     
-    def __init__(self, x, y, width, height):
+    def __init__(self, x, y, width, height, initial_color=None):
         super().__init__(x, y, width, height)
         self.setFlag(QGraphicsRectItem.ItemIsMovable, True)
         self.setFlag(QGraphicsRectItem.ItemIsSelectable, True)
@@ -20,13 +20,20 @@ class ScalableRectangle(QGraphicsRectItem):
         
         # Set appearance
         self.setPen(QPen(QColor(139, 69, 19), 0.5))  # Brown frame (saddle brown)
-        self.setBrush(QBrush(Qt.transparent))  # Completely transparent fill
         
         # Enable mouse tracking for selection
         self.setAcceptHoverEvents(True)
         self.current_rotation = 0  # Track current rotation angle
         self.is_filled = False  # Track if rectangle is filled with average color
         self.fill_color = Qt.transparent  # Store the fill color
+        
+        # Set initial color if provided - only for frame/border
+        if initial_color and initial_color != Qt.transparent:
+            self.setPen(QPen(initial_color, 0.5))  # Apply color to frame with thinnest width
+        else:
+            self.setPen(QPen(QColor(139, 69, 19), 0.5))  # Default brown frame with thinnest width
+        
+        self.setBrush(QBrush(Qt.transparent))  # Always transparent fill
         
         # Assign serial number and increment for next rectangle
         self.serial_number = ScalableRectangle._next_serial_number
@@ -44,12 +51,9 @@ class ScalableRectangle(QGraphicsRectItem):
     def paint(self, painter, option, widget):
         # Only check for overlaps if we're not in a batch operation
         if hasattr(self.scene(), 'batch_operation') and self.scene().batch_operation:
-            # During batch operations, use normal appearance
-            painter.setPen(QPen(QColor(139, 69, 19), 0.5))
-            if self.is_filled:
-                painter.setBrush(QBrush(self.fill_color))
-            else:
-                painter.setBrush(QBrush(Qt.transparent))
+            # During batch operations, use the rectangle's pen and transparent brush
+            painter.setPen(self.pen())
+            painter.setBrush(QBrush(Qt.transparent))
         else:
             # Check for overlaps with other rectangles (only when necessary)
             overlapping = self.check_for_overlaps()
@@ -59,12 +63,9 @@ class ScalableRectangle(QGraphicsRectItem):
                 painter.setPen(QPen(Qt.red, 0.5))  # Thinnest possible red frame
                 painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
             else:
-                # Normal appearance
-                painter.setPen(QPen(QColor(139, 69, 19), 0.5))  # Brown frame (saddle brown)
-                if self.is_filled:
-                    painter.setBrush(QBrush(self.fill_color))
-                else:
-                    painter.setBrush(QBrush(Qt.transparent))
+                # Normal appearance - use the rectangle's pen and transparent brush
+                painter.setPen(self.pen())
+                painter.setBrush(QBrush(Qt.transparent))
         
         # Draw the rectangle
         painter.drawRect(self.rect())
@@ -357,9 +358,14 @@ class WorkspaceView(QGraphicsView):
         # Update scene rect to fit the scaled image
         self.scene.setSceneRect(QRectF(scaled_pixmap.rect()))
     
-    def add_rectangle(self, x, y, width=100, height=100):
-        rect = ScalableRectangle(x, y, width, height)
+    def add_rectangle(self, x, y, width=100, height=100, color=None):
+        rect = ScalableRectangle(x, y, width, height, color)
         self.scene.addItem(rect)
+        
+        # Track for undo if main window exists and not in batch operation
+        if self.main_window and not (hasattr(self.scene, 'batch_operation') and self.scene.batch_operation):
+            self.main_window.add_to_undo_stack('add_rectangles', [rect])
+        
         return rect
     
     def remove_overlapping_rectangles(self):
@@ -411,12 +417,16 @@ class WorkspaceView(QGraphicsView):
     
     def create_circle_of_rectangles(self, center_pos):
         """Create a circle of rectangles around a center position with a central rectangle at 45 degrees"""
+        # Get selected color
+        color = self.main_window.selected_color if self.main_window else None
+        
         # Create central rectangle at 45 degrees
         center_rect = self.add_rectangle(
             center_pos.x() - self.rectangle_size/2,
             center_pos.y() - self.rectangle_size/2,
             self.rectangle_size,
-            self.rectangle_size
+            self.rectangle_size,
+            color
         )
         center_rect.current_rotation = 45
         center_rect.setRotation(45)
@@ -478,8 +488,11 @@ class WorkspaceView(QGraphicsView):
                 rect_x = center_pos.x() + radius_distance * math.cos(angle) - self.rectangle_size/2
                 rect_y = center_pos.y() + radius_distance * math.sin(angle) - self.rectangle_size/2
                 
+                # Get selected color
+                color = self.main_window.selected_color if self.main_window else None
+                
                 # Create rectangle
-                rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
+                rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size, color)
                 
                 # Rotate rectangle to point towards center (tangent to circle)
                 angle_degrees = math.degrees(angle) + 90  # +90 to make it tangent
@@ -501,15 +514,16 @@ class WorkspaceView(QGraphicsView):
             center = self.mapToScene(self.rect().center())
             rect_x = center.x() - self.rectangle_size/2
             rect_y = center.y() - self.rectangle_size/2
+            color = self.main_window.selected_color if self.main_window else None
             
             if self.half_rectangle_mode:
                 # Add half-width rectangle
                 half_width = self.rectangle_size / 2
                 rect_x = center.x() - half_width/2
-                self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size)
+                self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size, color)
             else:
                 # Add full rectangle
-                self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
+                self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size, color)
         elif event.key() == Qt.Key_R:
             # Rotate selected rectangles counter-clockwise
             self.rotate_selected_rectangles(False)
@@ -540,16 +554,18 @@ class WorkspaceView(QGraphicsView):
             half_width = self.rectangle_size / 2
             rect_x = center.x() - half_width/2
             rect_y = center.y() - self.rectangle_size/2
+            color = self.main_window.selected_color if self.main_window else None
             
-            self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size)
+            self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size, color)
         elif event.key() == Qt.Key_O:
             # Add rectangle with half the size when 'O' is pressed
             center = self.mapToScene(self.rect().center())
             half_size = self.rectangle_size / 2
             rect_x = center.x() - half_size/2
             rect_y = center.y() - half_size/2
+            color = self.main_window.selected_color if self.main_window else None
             
-            self.add_rectangle(rect_x, rect_y, half_size, half_size)
+            self.add_rectangle(rect_x, rect_y, half_size, half_size, color)
         elif event.key() == Qt.Key_D:
             # Toggle drawing mode
             self.drawing_mode = not self.drawing_mode
@@ -661,9 +677,19 @@ class WorkspaceView(QGraphicsView):
     
     def mousePressEvent(self, event):
         if self.circle_mode and event.button() == Qt.LeftButton:
+            # Track rectangles before creating circle
+            rectangles_before = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
+            
             # Create a circle of rectangles at the click position
             click_pos = self.mapToScene(event.pos())
             self.create_circle_of_rectangles(click_pos)
+            
+            # Track new rectangles for undo
+            rectangles_after = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
+            new_rectangles = [rect for rect in rectangles_after if rect not in rectangles_before]
+            
+            if new_rectangles and self.main_window:
+                self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
         elif self.drawing_mode and event.button() == Qt.LeftButton:
             # Start drawing a path
             self.is_drawing = True
@@ -706,12 +732,22 @@ class WorkspaceView(QGraphicsView):
                 self.scene.removeItem(self.current_path_item)
                 self.current_path_item = None
             
+            # Track rectangles before creating them
+            rectangles_before = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
+            
             # Create rectangles along the drawn path
             self.create_rectangles_along_path()
             
             # If parallel mode is enabled, create parallel paths
             if self.parallel_mode:
                 self.create_parallel_paths()
+            
+            # Track new rectangles for undo
+            rectangles_after = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
+            new_rectangles = [rect for rect in rectangles_after if rect not in rectangles_before]
+            
+            if new_rectangles and self.main_window:
+                self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
             
             # Check if auto overlap removal is enabled
             if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
@@ -1038,10 +1074,13 @@ class WorkspaceView(QGraphicsView):
                     # Calculate smooth angle using the parallel path
                     angle_degrees = self.calculate_smooth_angle(path, segment_idx, ratio)
                     
+                    # Get selected color
+                    color = self.main_window.selected_color if self.main_window else None
+                    
                     # Create rectangle at this position
                     rect_x = x - self.rectangle_size/2
                     rect_y = y - self.rectangle_size/2
-                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size)
+                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size, color)
                     
                     # Rotate the rectangle to match the smooth angle
                     rect.current_rotation = angle_degrees
@@ -1086,13 +1125,16 @@ class WorkspaceView(QGraphicsView):
                     # Calculate smooth angle using the path
                     angle_degrees = self.calculate_smooth_angle(path, segment_idx, ratio)
                     
+                    # Get selected color
+                    color = self.main_window.selected_color if self.main_window else None
+                    
                     # Create half-width rectangle at this position
                     # For half rectangle mode, we want the long side along the line
                     # So we create with full width and half height, with no additional rotation
                     half_height = self.rectangle_size / 2
                     rect_x = x - self.rectangle_size/2
                     rect_y = y - half_height/2
-                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, half_height)
+                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, half_height, color)
                     
                     # Rotate the rectangle to match the smooth angle (no additional offset)
                     # This makes the long side align with the drawn line
@@ -1125,6 +1167,11 @@ class MainWindow(QMainWindow):
         clear_btn = QPushButton("Clear All")
         clear_btn.clicked.connect(self.clear_all)
         toolbar_layout.addWidget(clear_btn)
+        
+        # Add undo button
+        self.undo_btn = QPushButton("Undo")
+        self.undo_btn.clicked.connect(self.undo_last_action)
+        toolbar_layout.addWidget(self.undo_btn)
         
         # Add color toggle button
         self.color_btn = QPushButton("Color")
@@ -1165,7 +1212,10 @@ class MainWindow(QMainWindow):
         self.color_mode = False
         
         # Initialize selected color
-        self.selected_color = QColor(255, 0, 0)  # Default red
+        self.selected_color = QColor(0, 0, 0)  # Default black
+        
+        # Initialize undo stack
+        self.undo_stack = []
         
         # Create menu bar
         self.create_menu_bar()
@@ -1230,7 +1280,7 @@ class MainWindow(QMainWindow):
         rect_x = center.x() - size/2
         rect_y = center.y() - size/2
         
-        self.workspace.add_rectangle(rect_x, rect_y, size, size)
+        self.workspace.add_rectangle(rect_x, rect_y, size, size, self.selected_color)
     
     def update_rectangle_size(self):
         """Update the rectangle size based on input"""
@@ -1335,7 +1385,7 @@ class MainWindow(QMainWindow):
         rect_x = center.x() - half_width/2
         rect_y = center.y() - self.workspace.rectangle_size/2
         
-        self.workspace.add_rectangle(rect_x, rect_y, half_width, self.workspace.rectangle_size)
+        self.workspace.add_rectangle(rect_x, rect_y, half_width, self.workspace.rectangle_size, self.selected_color)
         self.status_label.setText("Added half-width rectangle")
     
     def add_small_rectangle(self):
@@ -1345,7 +1395,7 @@ class MainWindow(QMainWindow):
         rect_x = center.x() - half_size/2
         rect_y = center.y() - half_size/2
         
-        self.workspace.add_rectangle(rect_x, rect_y, half_size, half_size)
+        self.workspace.add_rectangle(rect_x, rect_y, half_size, half_size, self.selected_color)
         self.status_label.setText("Added small rectangle")
     
     def fill_selected_rectangles(self):
@@ -1354,6 +1404,16 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Filled selected rectangles")
     
     def clear_all(self):
+        # Get all rectangles before clearing
+        rectangles_to_clear = []
+        for item in self.workspace.scene.items():
+            if isinstance(item, ScalableRectangle):
+                rectangles_to_clear.append(item)
+        
+        # Add to undo stack before clearing
+        if rectangles_to_clear:
+            self.add_to_undo_stack('clear_all', rectangles_to_clear)
+        
         # Clear all items except background
         for item in self.workspace.scene.items():
             if item != self.workspace.background_item and not item.type() == 8:  # 8 is QGraphicsTextItem
@@ -1387,6 +1447,35 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Removed {removed_count} overlapping rectangles")
         else:
             self.status_label.setText("No overlapping rectangles found")
+    
+    def undo_last_action(self):
+        """Undo the last action"""
+        if self.undo_stack:
+            last_action = self.undo_stack.pop()
+            if last_action['type'] == 'add_rectangles':
+                # Remove the rectangles that were added
+                for rect in last_action['rectangles']:
+                    if rect.scene():  # Check if rectangle is still in scene
+                        self.workspace.scene.removeItem(rect)
+                self.status_label.setText(f"Undid: removed {len(last_action['rectangles'])} rectangles")
+            elif last_action['type'] == 'clear_all':
+                # Restore all the rectangles that were cleared
+                for rect in last_action['rectangles']:
+                    self.workspace.scene.addItem(rect)
+                self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} rectangles")
+        else:
+            self.status_label.setText("Nothing to undo")
+    
+    def add_to_undo_stack(self, action_type, rectangles):
+        """Add an action to the undo stack"""
+        # Keep only the last 10 actions to prevent memory issues
+        if len(self.undo_stack) >= 10:
+            self.undo_stack.pop(0)
+        
+        self.undo_stack.append({
+            'type': action_type,
+            'rectangles': rectangles.copy() if isinstance(rectangles, list) else [rectangles]
+        })
     
     def create_left_taskbar(self):
         """Create the left taskbar with drawing tools"""
@@ -1554,7 +1643,7 @@ class MainWindow(QMainWindow):
         selected_color_layout.addWidget(QLabel("Selected Color:"))
         self.selected_color_display = QLabel()
         self.selected_color_display.setFixedSize(30, 20)
-        self.selected_color_display.setStyleSheet("border: 1px solid black; background-color: #FF0000;")
+        self.selected_color_display.setStyleSheet("border: 1px solid black; background-color: #000000;")
         selected_color_layout.addWidget(self.selected_color_display)
         selected_color_layout.addStretch()
         right_layout.addLayout(selected_color_layout)
