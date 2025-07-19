@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene,
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
                            QGraphicsRectItem, QGraphicsPixmapItem, QLineEdit, QLabel,
                            QGraphicsLineItem, QGraphicsPathItem, QSlider, QGridLayout)
-from PyQt5.QtCore import Qt, QRectF, QPointF
+from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer
 from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor
 
 class ScalableRectangle(QGraphicsRectItem):
@@ -49,12 +49,47 @@ class ScalableRectangle(QGraphicsRectItem):
         return super().boundingRect()
     
     def paint(self, painter, option, widget):
-        # Simple paint method - no overlap checking
-        painter.setPen(self.pen())
-        painter.setBrush(QBrush(Qt.transparent))
+        # Determine if we should check for overlaps (avoid during batch operations or zooming)
+        should_check_overlaps = not ((hasattr(self.scene(), 'batch_operation') and self.scene().batch_operation) or \
+                                   (hasattr(self.scene(), 'is_zooming') and self.scene().is_zooming))
+        
+        # Check for overlaps if allowed, otherwise use cached state
+        if should_check_overlaps:
+            overlapping = self.check_for_overlaps()
+            # Cache the overlap state for use during zoom
+            self._cached_overlapping = overlapping
+        else:
+            # Use cached overlap state if available, otherwise assume no overlap
+            overlapping = getattr(self, '_cached_overlapping', False)
+        
+        if overlapping:
+            # Change appearance for overlapping rectangles
+            painter.setPen(QPen(Qt.red, 0.5))  # Thinnest possible red frame
+            painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
+        else:
+            # Normal appearance - use the rectangle's pen and transparent brush
+            painter.setPen(self.pen())
+            painter.setBrush(QBrush(Qt.transparent))
         
         # Draw the rectangle
         painter.drawRect(self.rect())
+    
+    def check_for_overlaps(self):
+        """Check if this rectangle overlaps with any other rectangles - optimized version"""
+        if not self.scene():
+            return False
+        
+        # Get nearby items only (within a reasonable distance)
+        search_rect = self.sceneBoundingRect().adjusted(-50, -50, 50, 50)
+        nearby_items = self.scene().items(search_rect)
+        
+        # Check only nearby rectangles
+        for item in nearby_items:
+            if isinstance(item, ScalableRectangle) and item != self:
+                # Quick bounding box check first
+                if self.collidesWithItem(item):
+                    return True
+        return False
     
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -64,10 +99,28 @@ class ScalableRectangle(QGraphicsRectItem):
     
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
+        # Only update nearby rectangles when this one is released (moved)
+        self.update_nearby_rectangles()
     
     def itemChange(self, change, value):
-        # Simple item change handling
+        # Reduce the frequency of updates during position changes
+        if change == self.ItemPositionChange and self.scene():
+            # Don't update during every position change, only on release
+            pass
         return super().itemChange(change, value)
+    
+    def update_nearby_rectangles(self):
+        """Update only nearby rectangles for better performance"""
+        if not self.scene():
+            return
+        
+        # Get nearby items only
+        search_rect = self.sceneBoundingRect().adjusted(-100, -100, 100, 100)
+        nearby_items = self.scene().items(search_rect)
+        
+        for item in nearby_items:
+            if isinstance(item, ScalableRectangle):
+                item.update()
     
     def rotate_clockwise(self):
         # Rotate 1 degree clockwise
@@ -156,27 +209,6 @@ class ScalableRectangle(QGraphicsRectItem):
         """Make the rectangle transparent"""
         self.is_filled = False
         self.update()  # Trigger repaint
-    
-    def set_overlap_color(self, color):
-        """Set the color for overlap visualization"""
-        self.overlap_color = color
-        self.setPen(QPen(color, 0.5))  # Keep thin pen for overlap visualization
-        self.update()
-    
-    def clear_overlap_color(self):
-        """Clear overlap color and restore original appearance"""
-        if hasattr(self, 'overlap_color'):
-            delattr(self, 'overlap_color')
-        # Restore original pen color
-        if hasattr(self, 'original_pen_color'):
-            self.setPen(QPen(self.original_pen_color, 0.5))
-        else:
-            self.setPen(QPen(QColor(139, 69, 19), 0.5))  # Default brown frame
-        self.update()
-    
-    def store_original_pen_color(self):
-        """Store the original pen color before overlap visualization"""
-        self.original_pen_color = self.pen().color()
 
 class WorkspaceView(QGraphicsView):
     def __init__(self, main_window=None):
@@ -202,14 +234,18 @@ class WorkspaceView(QGraphicsView):
         self.rectangle_size = 10  # Default rectangle size
         self.original_background_pixmap = None  # Store original background
         
+        # Performance optimization flag
+        self.scene.batch_operation = False
+        self.scene.is_zooming = False  # Flag to prevent overlap checking during zoom
+        #jj
         # Drawing mode variables
         self.drawing_mode = False
         self.drawing_path = []
         self.current_path_item = None
         self.is_drawing = False
-        self.rectangle_spacing = 1.16  # Default spacing multiplier
+        self.rectangle_spacing = 1.3  # Default spacing multiplier
         self.parallel_mode = False  # Parallel line mode
-        self.parallel_distance_multiplier = 0.6  # Distance multiplier for parallel lines
+        self.parallel_distance_multiplier = 0.7  # Distance multiplier for parallel lines
         self.parallel_lines_count = 1  # Number of parallel lines on each side
         self.second_line_spacing = 1.5  # Spacing multiplier for second parallel line
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
@@ -318,6 +354,9 @@ class WorkspaceView(QGraphicsView):
         return cursor
         
     def wheelEvent(self, event):
+        # Set zoom flag to prevent overlap checking during zoom
+        self.scene.is_zooming = True
+        
         # Zoom factor
         zoomInFactor = 1.15
         zoomOutFactor = 1 / zoomInFactor
@@ -336,6 +375,9 @@ class WorkspaceView(QGraphicsView):
         newPos = self.mapToScene(event.pos())
         delta = newPos - oldPos
         self.translate(delta.x(), delta.y())
+        
+        # Clear zoom flag after a short delay to allow all paint events to complete
+        QTimer.singleShot(100, lambda: setattr(self.scene, 'is_zooming', False))
     
     def set_background_image(self, pixmap):
         # Remove existing background
@@ -374,17 +416,61 @@ class WorkspaceView(QGraphicsView):
         self.scene.setSceneRect(QRectF(scaled_pixmap.rect()))
     
     def add_rectangle(self, x, y, width=100, height=100, color=None):
-        # Create the rectangle at the specified position
         rect = ScalableRectangle(x, y, width, height, color)
-        
-        # Add to scene
         self.scene.addItem(rect)
         
-        # Track for undo if main window exists
-        if self.main_window:
+        # Track for undo if main window exists and not in batch operation
+        if self.main_window and not (hasattr(self.scene, 'batch_operation') and self.scene.batch_operation):
             self.main_window.add_to_undo_stack('add_rectangles', [rect])
         
         return rect
+    
+    def remove_overlapping_rectangles(self):
+        """Remove overlapping rectangles, keeping the older one (lower serial number) - using existing overlap detection"""
+        rectangles = []
+        for item in self.scene.items():
+            if isinstance(item, ScalableRectangle):
+                rectangles.append(item)
+        
+        if len(rectangles) < 2:
+            return 0  # No overlaps possible with less than 2 rectangles
+        
+        rectangles_to_remove = []
+        
+        # Use existing check_for_overlaps method for each rectangle
+        for rect in rectangles:
+            if rect in rectangles_to_remove:
+                continue
+                
+            # Use the existing optimized overlap detection
+            if rect.check_for_overlaps():
+                # Find which specific rectangles this one overlaps with
+                search_rect = rect.sceneBoundingRect().adjusted(-50, -50, 50, 50)
+                nearby_items = self.scene.items(search_rect)
+                
+                for item in nearby_items:
+                    if (isinstance(item, ScalableRectangle) and 
+                        item != rect and 
+                        item not in rectangles_to_remove and
+                        rect.collidesWithItem(item)):
+                        
+                        # Remove the one with the higher serial number (created later)
+                        if rect.serial_number > item.serial_number:
+                            rectangles_to_remove.append(rect)
+                            break  # No need to check this rectangle further
+                        else:
+                            rectangles_to_remove.append(item)
+        
+        # Remove the overlapping rectangles
+        for rect in rectangles_to_remove:
+            self.scene.removeItem(rect)
+        
+        # Force update of remaining rectangles to clear red coloring
+        for rect in rectangles:
+            if rect not in rectangles_to_remove:
+                rect.update()
+        
+        return len(rectangles_to_remove)
     
     def create_circle_of_rectangles(self, center_pos):
         """Create a circle of rectangles around a center position with a central rectangle at 45 degrees"""
@@ -470,6 +556,12 @@ class WorkspaceView(QGraphicsView):
                 
                 rect.current_rotation = angle_degrees
                 rect.setRotation(angle_degrees)
+        
+        # Check if auto overlap removal is enabled
+        if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
+            removed_count = self.remove_overlapping_rectangles()
+            if removed_count > 0 and hasattr(self.main_window, 'status_label'):
+                self.main_window.status_label.setText(f"Circle created - Auto-removed {removed_count} overlapping rectangles")
     
 
     
@@ -743,21 +835,10 @@ class WorkspaceView(QGraphicsView):
             if new_rectangles and self.main_window:
                 self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
         elif (self.drawing_mode or self.edge_mode) and event.button() == Qt.LeftButton:
-            # Check if cursor is over an existing rectangle - if so, don't start drawing
-            click_pos = self.mapToScene(event.pos())
-            items_at_pos = self.scene.items(click_pos)
-            rectangle_at_pos = any(isinstance(item, ScalableRectangle) for item in items_at_pos)
-            
-            if rectangle_at_pos:
-                # Don't start drawing if there's a rectangle at the click position
-                # Let the default mouse behavior handle rectangle interaction
-                super().mousePressEvent(event)
-                return
-            
             # Start drawing a path
             self.is_drawing = True
             self.drawing_path = []
-            start_pos = click_pos
+            start_pos = self.mapToScene(event.pos())
             self.drawing_path.append(start_pos)
             
             # Create a path item for visual feedback
@@ -822,6 +903,12 @@ class WorkspaceView(QGraphicsView):
             if new_rectangles and self.main_window:
                 self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
             
+            # Check if auto overlap removal is enabled
+            if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
+                removed_count = self.remove_overlapping_rectangles()
+                if removed_count > 0 and hasattr(self.main_window, 'status_label'):
+                    self.main_window.status_label.setText(f"Auto-removed {removed_count} overlapping rectangles")
+            
             # Clear the path
             self.drawing_path = []
         else:
@@ -831,6 +918,9 @@ class WorkspaceView(QGraphicsView):
         """Create rectangles along the drawn path"""
         if len(self.drawing_path) < 2:
             return
+        
+        # Enable batch operation mode for better performance
+        self.scene.batch_operation = True
         
         # Smooth the path by averaging neighboring points
         self.smoothed_path = self.smooth_path(self.drawing_path)
@@ -845,6 +935,9 @@ class WorkspaceView(QGraphicsView):
                 self.create_half_rectangles_along_path(self.smoothed_path)
             else:
                 self.create_rectangles_along_specific_path(self.smoothed_path)
+        
+        # Disable batch operation mode
+        self.scene.batch_operation = False
     
     def smooth_path(self, path):
         """Smooth the path using a simple moving average"""
@@ -1102,7 +1195,7 @@ class WorkspaceView(QGraphicsView):
                 resampled.append(last_point)
         
         return resampled
-
+    
     def create_rectangles_along_specific_path(self, path):
         """Create rectangles along a specific path (used for parallel lines)"""
         if len(path) < 2:
@@ -1141,14 +1234,10 @@ class WorkspaceView(QGraphicsView):
                     # Get selected color
                     color = self.main_window.selected_color if self.main_window else None
                     
-                    # Create rectangle at the calculated position
-                    rect = self.add_rectangle(
-                        x - self.rectangle_size/2, 
-                        y - self.rectangle_size/2, 
-                        self.rectangle_size, 
-                        self.rectangle_size, 
-                        color
-                    )
+                    # Create rectangle at this position
+                    rect_x = x - self.rectangle_size/2
+                    rect_y = y - self.rectangle_size/2
+                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size, color)
                     
                     # Rotate the rectangle to match the smooth angle
                     rect.current_rotation = angle_degrees
@@ -1200,14 +1289,9 @@ class WorkspaceView(QGraphicsView):
                     # For half rectangle mode, we want the long side along the line
                     # So we create with full width and half height, with no additional rotation
                     half_height = self.rectangle_size / 2
-                    
-                    rect = self.add_rectangle(
-                        x - self.rectangle_size/2, 
-                        y - half_height/2, 
-                        self.rectangle_size, 
-                        half_height, 
-                        color
-                    )
+                    rect_x = x - self.rectangle_size/2
+                    rect_y = y - half_height/2
+                    rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, half_height, color)
                     
                     # Rotate the rectangle to match the smooth angle (no additional offset)
                     # This makes the long side align with the drawn line
@@ -1371,19 +1455,9 @@ class MainWindow(QMainWindow):
         self.color_btn.clicked.connect(self.toggle_color_mode)
         toolbar_layout.addWidget(self.color_btn)
         
-        # Add delete top rectangles button
-        self.del_top_btn = QPushButton("del Top")
-        self.del_top_btn.clicked.connect(self.delete_top_rectangles)
-        toolbar_layout.addWidget(self.del_top_btn)
-        
-        # Add delete bottom rectangles button
-        self.del_bottom_btn = QPushButton("del Bottom")
-        self.del_bottom_btn.clicked.connect(self.delete_bottom_rectangles)
-        toolbar_layout.addWidget(self.del_bottom_btn)
-        
-        # Add overlap detection button
-        self.overlap_btn = QPushButton("Show Overlaps")
-        self.overlap_btn.clicked.connect(self.show_overlaps)
+        # Add overlap removal button
+        self.overlap_btn = QPushButton("Overlap")
+        self.overlap_btn.clicked.connect(self.remove_overlapping_rectangles)
         toolbar_layout.addWidget(self.overlap_btn)
         
         toolbar_layout.addStretch()
@@ -1428,42 +1502,12 @@ class MainWindow(QMainWindow):
     
     def toggle_parallel_mode_right(self):
         """Toggle parallel mode from right taskbar"""
+        self.workspace.set_parallel_mode(self.right_parallel_btn.isChecked())
+        # Update button text
         if self.right_parallel_btn.isChecked():
-            # Turn off other drawing modes when parallel mode is enabled
-            if self.drawing_btn.isChecked():
-                self.drawing_btn.setChecked(False)
-                self.toggle_drawing_mode()
-            if self.edge_btn.isChecked():
-                self.edge_btn.setChecked(False)
-                self.toggle_edge_mode()
-            # Turn off erase mode when parallel mode is enabled
-            if self.erase_btn.isChecked():
-                self.erase_btn.setChecked(False)
-                self.toggle_erase_mode()
-            # Turn off circle mode when parallel mode is enabled
-            if self.circle_btn.isChecked():
-                self.circle_btn.setChecked(False)
-                self.toggle_circle_mode()
-            
-            self.workspace.drawing_mode = True
-            self.workspace.parallel_mode = True
-            self.workspace.edge_mode = False
-            self.workspace.setDragMode(QGraphicsView.NoDrag)
-            # Use drawing cursor since circle mode is now disabled
-            self.workspace.setCursor(self.workspace.drawing_cursor)
             self.right_parallel_btn.setText("Parallel Mode: ON")
-            self.status_label.setText("Parallel mode active")
         else:
-            self.workspace.drawing_mode = False
-            self.workspace.parallel_mode = False
-            self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
-            # Use circle cursor if circle mode is on, otherwise use default cursor
-            if self.workspace.circle_mode:
-                self.workspace.setCursor(self.workspace.circle_cursor)
-            else:
-                self.workspace.setCursor(Qt.ArrowCursor)
             self.right_parallel_btn.setText("Parallel Mode: OFF")
-            self.status_label.setText("Ready")
     
     def create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -1540,7 +1584,7 @@ class MainWindow(QMainWindow):
     def update_rectangle_spacing(self, text):
         """Update the rectangle spacing based on input"""
         try:
-            spacing = float(text) if text else 1.16
+            spacing = float(text) if text else 1.3
             # Clamp spacing between 0.1 and 10.0
             spacing = max(0.1, min(10.0, spacing))
             self.workspace.set_rectangle_spacing(spacing)
@@ -1553,7 +1597,7 @@ class MainWindow(QMainWindow):
     def update_parallel_distance(self, text):
         """Update the parallel distance based on input"""
         try:
-            distance = float(text) if text else 0.6
+            distance = float(text) if text else 0.7
             # Clamp distance between 0.5 and 10.0
             distance = max(0.5, min(10.0, distance))
             self.workspace.set_parallel_distance(distance)
@@ -1614,41 +1658,34 @@ class MainWindow(QMainWindow):
             pass
     
     def toggle_drawing_mode(self):
-        """Toggle single line drawing mode from the taskbar"""
-        if self.drawing_btn.isChecked():
-            # Turn off other drawing modes when single line mode is enabled
-            if self.right_parallel_btn.isChecked():
-                self.right_parallel_btn.setChecked(False)
-                self.toggle_parallel_mode_right()
-            if self.edge_btn.isChecked():
-                self.edge_btn.setChecked(False)
-                self.toggle_edge_mode()
+        """Toggle drawing mode from the taskbar"""
+        self.workspace.drawing_mode = self.drawing_btn.isChecked()
+        if self.workspace.drawing_mode:
             # Turn off erase mode when drawing mode is enabled
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
-            # Turn off circle mode when drawing mode is enabled
-            if self.circle_btn.isChecked():
-                self.circle_btn.setChecked(False)
-                self.toggle_circle_mode()
+            # Turn off edge mode when drawing mode is enabled
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
             
-            self.workspace.drawing_mode = True
-            self.workspace.parallel_mode = False
-            self.workspace.edge_mode = False
             self.workspace.setDragMode(QGraphicsView.NoDrag)
-            # Use drawing cursor since circle mode is now disabled
-            self.workspace.setCursor(self.workspace.drawing_cursor)
-            self.drawing_btn.setText("Single Line: ON")
-            self.status_label.setText("Single Line mode active")
+            # Use circle cursor if circle mode is on, otherwise use drawing cursor
+            if self.workspace.circle_mode:
+                self.workspace.setCursor(self.workspace.circle_cursor)
+            else:
+                self.workspace.setCursor(self.workspace.drawing_cursor)
+            self.drawing_btn.setText("Drawing: ON")
+            self.status_label.setText("Drawing mode active")
         else:
-            self.workspace.drawing_mode = False
             self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
             # Use circle cursor if circle mode is on, otherwise use default cursor
             if self.workspace.circle_mode:
                 self.workspace.setCursor(self.workspace.circle_cursor)
             else:
                 self.workspace.setCursor(Qt.ArrowCursor)
-            self.drawing_btn.setText("Single Line: OFF")
+            self.drawing_btn.setText("Drawing: OFF")
             self.status_label.setText("Ready")
     
     def add_half_width_rectangle(self):
@@ -1720,62 +1757,6 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Removed {removed_count} overlapping rectangles")
         else:
             self.status_label.setText("No overlapping rectangles found")
-    
-    def delete_top_rectangles(self):
-        """Delete all red colored rectangles (top overlapping rectangles)"""
-        rectangles_to_remove = []
-        
-        # Find all rectangles that would be colored red (top overlapping rectangles)
-        for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                # Check if this rectangle is overlapping and is on top
-                overlapping, overlap_position = item.check_for_overlaps()
-                if overlapping and overlap_position == "top":
-                    rectangles_to_remove.append(item)
-        
-        # Remove the red (top) rectangles
-        for rect in rectangles_to_remove:
-            self.workspace.scene.removeItem(rect)
-        
-        # Add to undo stack
-        if rectangles_to_remove:
-            self.add_to_undo_stack('erase_rectangles', rectangles_to_remove)
-            self.status_label.setText(f"Deleted {len(rectangles_to_remove)} top overlapping rectangles")
-            
-            # Force update of remaining rectangles to clear any overlap coloring
-            for item in self.workspace.scene.items():
-                if isinstance(item, ScalableRectangle):
-                    item.update()
-        else:
-            self.status_label.setText("No top overlapping rectangles found")
-    
-    def delete_bottom_rectangles(self):
-        """Delete all green colored rectangles (bottom overlapping rectangles)"""
-        rectangles_to_remove = []
-        
-        # Find all rectangles that would be colored green (bottom overlapping rectangles)
-        for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                # Check if this rectangle is overlapping and is on bottom
-                overlapping, overlap_position = item.check_for_overlaps()
-                if overlapping and overlap_position == "bottom":
-                    rectangles_to_remove.append(item)
-        
-        # Remove the green (bottom) rectangles
-        for rect in rectangles_to_remove:
-            self.workspace.scene.removeItem(rect)
-        
-        # Add to undo stack
-        if rectangles_to_remove:
-            self.add_to_undo_stack('erase_rectangles', rectangles_to_remove)
-            self.status_label.setText(f"Deleted {len(rectangles_to_remove)} bottom overlapping rectangles")
-            
-            # Force update of remaining rectangles to clear any overlap coloring
-            for item in self.workspace.scene.items():
-                if isinstance(item, ScalableRectangle):
-                    item.update()
-        else:
-            self.status_label.setText("No bottom overlapping rectangles found")
     
     def undo_last_action(self):
         """Undo the last action"""
@@ -1878,7 +1859,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(basic_settings_label)
         
         # Add drawing mode toggle
-        self.drawing_btn = QPushButton("Single Line: OFF")
+        self.drawing_btn = QPushButton("Drawing: OFF")
         self.drawing_btn.setCheckable(True)
         self.drawing_btn.setChecked(False)
         self.drawing_btn.clicked.connect(self.toggle_drawing_mode)
@@ -1900,6 +1881,13 @@ class MainWindow(QMainWindow):
         self.right_size_input.editingFinished.connect(self.update_rectangle_size)
         size_layout.addWidget(self.right_size_input)
         right_layout.addLayout(size_layout)
+        
+        # Auto-cleanup checkbox
+        self.auto_overlap_checkbox = QPushButton("Auto Remove Overlaps: OFF")
+        self.auto_overlap_checkbox.setCheckable(True)
+        self.auto_overlap_checkbox.setChecked(False)
+        self.auto_overlap_checkbox.clicked.connect(self.toggle_auto_overlap)
+        right_layout.addWidget(self.auto_overlap_checkbox)
         
         # Circle mode toggle
         self.circle_btn = QPushButton("Circle Mode: OFF")
@@ -1972,7 +1960,7 @@ class MainWindow(QMainWindow):
         # Parallel distance input
         parallel_distance_layout = QHBoxLayout()
         parallel_distance_layout.addWidget(QLabel("Parallel Distance:"))
-        self.right_parallel_distance_input = QLineEdit("0.6")
+        self.right_parallel_distance_input = QLineEdit("0.7")
         self.right_parallel_distance_input.setMaximumWidth(80)
         self.right_parallel_distance_input.setPlaceholderText("Distance")
         self.right_parallel_distance_input.textChanged.connect(self.update_parallel_distance)
@@ -1992,7 +1980,7 @@ class MainWindow(QMainWindow):
         # Rectangle spacing input
         spacing_layout = QHBoxLayout()
         spacing_layout.addWidget(QLabel("Line Spacing:"))
-        self.right_spacing_input = QLineEdit("1.16")
+        self.right_spacing_input = QLineEdit("1.3")
         self.right_spacing_input.setMaximumWidth(80)
         self.right_spacing_input.setPlaceholderText("Spacing")
         self.right_spacing_input.textChanged.connect(self.update_rectangle_spacing)
@@ -2019,24 +2007,26 @@ class MainWindow(QMainWindow):
         
         # Add stretch to push everything to the top
         right_layout.addStretch()
+
+    def toggle_auto_overlap(self):
+        """Toggle auto overlap removal mode"""
+        if self.auto_overlap_checkbox.isChecked():
+            self.auto_overlap_checkbox.setText("Auto Remove Overlaps: ON")
+        else:
+            self.auto_overlap_checkbox.setText("Auto Remove Overlaps: OFF")
     
     def toggle_circle_mode(self):
         """Toggle circle mode"""
         self.workspace.set_circle_mode(self.circle_btn.isChecked())
         if self.circle_btn.isChecked():
-            # Turn off all drawing modes when circle mode is enabled
-            if self.drawing_btn.isChecked():
-                self.drawing_btn.setChecked(False)
-                self.toggle_drawing_mode()
-            if self.right_parallel_btn.isChecked():
-                self.right_parallel_btn.setChecked(False)
-                self.toggle_parallel_mode_right()
-            if self.edge_btn.isChecked():
-                self.edge_btn.setChecked(False)
-                self.toggle_edge_mode()
+            # Turn off erase mode when circle mode is enabled
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
+            # Turn off edge mode when circle mode is enabled
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
             self.circle_btn.setText("Circle Mode: ON")
         else:
             self.circle_btn.setText("Circle Mode: OFF")
@@ -2046,58 +2036,36 @@ class MainWindow(QMainWindow):
         self.workspace.set_erase_mode(self.erase_btn.isChecked())
         if self.erase_btn.isChecked():
             self.erase_btn.setText("Erase Mode: ON")
-            # Turn off all drawing modes when erase mode is enabled
+            # Turn off other modes when erase mode is enabled
             if self.drawing_btn.isChecked():
                 self.drawing_btn.setChecked(False)
                 self.toggle_drawing_mode()
-            if self.right_parallel_btn.isChecked():
-                self.right_parallel_btn.setChecked(False)
-                self.toggle_parallel_mode_right()
-            if self.edge_btn.isChecked():
-                self.edge_btn.setChecked(False)
-                self.toggle_edge_mode()
             if self.circle_btn.isChecked():
                 self.circle_btn.setChecked(False)
                 self.toggle_circle_mode()
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
         else:
             self.erase_btn.setText("Erase Mode: OFF")
     
     def toggle_edge_mode(self):
         """Toggle edge mode"""
+        self.workspace.set_edge_mode(self.edge_btn.isChecked())
         if self.edge_btn.isChecked():
-            # Turn off other drawing modes when edge mode is enabled
+            self.edge_btn.setText("Edge Mode: ON")
+            # Turn off other modes when edge mode is enabled
             if self.drawing_btn.isChecked():
                 self.drawing_btn.setChecked(False)
                 self.toggle_drawing_mode()
-            if self.right_parallel_btn.isChecked():
-                self.right_parallel_btn.setChecked(False)
-                self.toggle_parallel_mode_right()
-            # Turn off other modes when edge mode is enabled
             if self.circle_btn.isChecked():
                 self.circle_btn.setChecked(False)
                 self.toggle_circle_mode()
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
-            
-            self.workspace.drawing_mode = True
-            self.workspace.parallel_mode = False
-            self.workspace.edge_mode = True
-            self.workspace.setDragMode(QGraphicsView.NoDrag)
-            self.workspace.setCursor(self.workspace.drawing_cursor)
-            self.edge_btn.setText("Edge Mode: ON")
-            self.status_label.setText("Edge mode active")
         else:
-            self.workspace.drawing_mode = False
-            self.workspace.edge_mode = False
-            self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
-            # Reset to appropriate cursor based on current mode
-            if self.workspace.circle_mode:
-                self.workspace.setCursor(self.workspace.circle_cursor)
-            else:
-                self.workspace.setCursor(Qt.ArrowCursor)
             self.edge_btn.setText("Edge Mode: OFF")
-            self.status_label.setText("Ready")
     
     def toggle_half_rectangle_mode(self):
         """Toggle half rectangle mode"""
@@ -2174,65 +2142,7 @@ class MainWindow(QMainWindow):
         """Select a color from the palette"""
         self.selected_color = QColor(color_hex)
         self.selected_color_display.setStyleSheet(f"border: 1px solid black; background-color: {color_hex};")
-    
-    def show_overlaps(self):
-        """Show overlapping rectangles with colors: red for top, green for bottom"""
-        # Get all rectangles in the scene
-        rectangles = []
-        for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                rectangles.append(item)
-        
-        if len(rectangles) < 2:
-            self.status_label.setText("No overlaps found (need at least 2 rectangles)")
-            return
-        
-        # Store original pen colors before changing them
-        for rect in rectangles:
-            rect.store_original_pen_color()
-        
-        # Track overlapping rectangles and their relationships
-        overlapping_rectangles = set()
-        overlap_count = 0
-        
-        # Check each pair of rectangles for overlaps
-        for i in range(len(rectangles)):
-            for j in range(i + 1, len(rectangles)):
-                rect1 = rectangles[i]
-                rect2 = rectangles[j]
-                
-                # Check if rectangles overlap
-                if rect1.collidesWithItem(rect2):
-                    overlap_count += 1
-                    overlapping_rectangles.add(rect1)
-                    overlapping_rectangles.add(rect2)
-        
-        # For each overlapping rectangle, determine if it's generally "newer" or "older"
-        # based on its average relationship with other overlapping rectangles
-        for rect in overlapping_rectangles:
-            newer_count = 0
-            older_count = 0
-            
-            # Check this rectangle against all other overlapping rectangles
-            for other_rect in overlapping_rectangles:
-                if rect != other_rect and rect.collidesWithItem(other_rect):
-                    if rect.serial_number > other_rect.serial_number:
-                        newer_count += 1
-                    else:
-                        older_count += 1
-            
-            # Assign color based on whether this rectangle is generally newer or older
-            if newer_count > older_count:
-                # This rectangle is generally newer than others it overlaps with
-                rect.set_overlap_color(QColor(255, 0, 0))  # Red for newer (top)
-            else:
-                # This rectangle is generally older than others it overlaps with (includes equal counts)
-                rect.set_overlap_color(QColor(0, 255, 0))  # Green for older (bottom)
-        
-        if overlap_count == 0:
-            self.status_label.setText("No overlaps found")
-        else:
-            self.status_label.setText(f"Found {overlap_count} overlaps: Red = Latest, Green = Earlier")
+
 if __name__ == "__main__":
     import sys
     app = QApplication(sys.argv)
