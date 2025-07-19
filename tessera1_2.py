@@ -1,5 +1,6 @@
 import sys
 import math
+import csv
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, 
                            QGraphicsView, QVBoxLayout, QWidget, QMenuBar, 
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
@@ -28,7 +29,7 @@ class ScalableRectangle(QGraphicsRectItem):
         self.fill_color = Qt.transparent  # Store the fill color
         
         # Set initial color if provided - only for frame/border
-        if initial_color and initial_color != Qt.transparent:
+        if initial_color and initial_color.alpha() > 0:  # Not transparent
             self.setPen(QPen(initial_color, 0.5))  # Apply color to frame with thinnest width
         else:
             self.setPen(QPen(QColor(139, 69, 19), 0.5))  # Default brown frame with thinnest width
@@ -392,36 +393,16 @@ class WorkspaceView(QGraphicsView):
         if self.background_item:
             self.scene.removeItem(self.background_item)
         
-        # Get original image dimensions
-        original_width = pixmap.width()
-        original_height = pixmap.height()
+        # Use the original pixmap without any scaling
+        self.original_background_pixmap = pixmap
         
-        # Find the greater dimension and calculate scale factor
-        max_dimension = max(original_width, original_height)
-        scale_factor = 1000 / max_dimension
-        
-        # Calculate new dimensions
-        new_width = int(original_width * scale_factor)
-        new_height = int(original_height * scale_factor)
-        
-        # Scale the pixmap while maintaining aspect ratio
-        scaled_pixmap = pixmap.scaled(
-            new_width,
-            new_height,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation
-        )
-        
-        # Store the original scaled pixmap
-        self.original_background_pixmap = scaled_pixmap
-        
-        # Add the background
-        self.background_item = QGraphicsPixmapItem(scaled_pixmap)
+        # Add the background at original size
+        self.background_item = QGraphicsPixmapItem(pixmap)
         self.background_item.setZValue(-1)  # Put it behind everything
         self.scene.addItem(self.background_item)
         
-        # Update scene rect to fit the scaled image
-        self.scene.setSceneRect(QRectF(scaled_pixmap.rect()))
+        # Update scene rect to fit the original image size
+        self.scene.setSceneRect(QRectF(pixmap.rect()))
     
     def set_solid_color_background(self, color):
         """Set a solid color background"""
@@ -882,17 +863,22 @@ class WorkspaceView(QGraphicsView):
     
     def mousePressEvent(self, event):
         if self.paint_mode and event.button() == Qt.LeftButton:
-            # Paint mode: fill clicked rectangle with selected color
+            # Paint mode: fill clicked rectangle with selected color or make transparent
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
             
             # Find the first rectangle at this position and paint it
             for item in items_at_pos:
                 if isinstance(item, ScalableRectangle):
-                    # Fill the rectangle with the selected color
-                    item.fill_color = self.main_window.selected_color if self.main_window else QColor(0, 0, 0)
-                    item.is_filled = True
-                    item.update()  # Trigger repaint
+                    # Check if selected color is transparent
+                    selected_color = self.main_window.selected_color if self.main_window else QColor(0, 0, 0)
+                    if selected_color.alpha() == 0:  # Transparent color selected
+                        item.set_transparent()
+                    else:
+                        # Fill the rectangle with the selected color
+                        item.fill_color = selected_color
+                        item.is_filled = True
+                        item.update()  # Trigger repaint
                     break  # Only paint the top-most rectangle
         elif self.erase_mode and event.button() == Qt.LeftButton:
             # Start erasing on left click
@@ -1655,6 +1641,14 @@ class MainWindow(QMainWindow):
         load_bg_action.triggered.connect(self.load_background)
         file_menu.addAction(load_bg_action)
         
+        import_array_action = QAction("Import Array", self)
+        import_array_action.triggered.connect(self.import_array_from_csv)
+        file_menu.addAction(import_array_action)
+        
+        save_array_action = QAction("Save Array", self)
+        save_array_action.triggered.connect(self.save_array_to_csv)
+        file_menu.addAction(save_array_action)
+        
         file_menu.addSeparator()
         
         exit_action = QAction("Exit", self)
@@ -1685,6 +1679,150 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap(file_path)
             if not pixmap.isNull():
                 self.workspace.set_background_image(pixmap)
+    
+    def save_array_to_csv(self):
+        """Export all rectangle data to CSV file"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Array to CSV", "", 
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    
+                    # Write header
+                    writer.writerow(['Serial_Number', 'Type', 'X', 'Y', 'Width', 'Height', 'Rotation', 'Frame_Color', 'Fill_Color', 'Is_Filled'])
+                    
+                    # Get all ScalableRectangle items from the scene
+                    for item in self.workspace.scene.items():
+                        if isinstance(item, ScalableRectangle):
+                            # Get serial number
+                            serial_number = item.serial_number if hasattr(item, 'serial_number') else 0
+                            
+                            # Determine rectangle type based on size
+                            rect = item.rect()
+                            width, height = rect.width(), rect.height()
+                            
+                            if width >= 40 and height >= 40:
+                                rect_type = "Regular"
+                            elif width >= 20 and height >= 20:
+                                rect_type = "Half"
+                            else:
+                                rect_type = "Small"
+                            
+                            # Get position and size from the rectangle's internal data
+                            # Use the rectangle's actual position and rect for accurate coordinates
+                            pos = item.pos()  # Item's position in scene
+                            rect = item.rect()  # Rectangle's internal rect (usually 0,0,width,height)
+                            
+                            # Calculate the actual top-left position in scene coordinates
+                            x = pos.x() + rect.x()
+                            y = pos.y() + rect.y()
+                            width, height = rect.width(), rect.height()
+                            
+                            # Get rotation
+                            rotation = item.current_rotation if hasattr(item, 'current_rotation') else 0
+                            
+                            # Get frame color (pen color)
+                            pen_color = item.pen().color()
+                            frame_color = pen_color.name()  # Hex format
+                            
+                            # Get fill color if exists
+                            fill_color = ""
+                            is_filled = False
+                            if hasattr(item, 'is_filled') and item.is_filled:
+                                is_filled = True
+                                if hasattr(item, 'fill_color'):
+                                    fill_color = item.fill_color.name()
+                                else:
+                                    # Get from brush if available
+                                    brush_color = item.brush().color()
+                                    if brush_color.alpha() > 0:
+                                        fill_color = brush_color.name()
+                            
+                            # Write row
+                            writer.writerow([serial_number, rect_type, x, y, width, height, rotation, frame_color, fill_color, is_filled])
+                
+                print(f"Array data saved to: {file_path}")
+                
+            except Exception as e:
+                print(f"Error saving CSV file: {e}")
+    
+    def import_array_from_csv(self):
+        """Import rectangle data from CSV file and recreate rectangles"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Array from CSV", "", 
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        if file_path:
+            try:
+                rectangles_created = 0
+                with open(file_path, 'r', newline='', encoding='utf-8') as csvfile:
+                    reader = csv.reader(csvfile)
+                    
+                    # Skip header row
+                    header = next(reader, None)
+                    if not header:
+                        print("Error: Empty CSV file")
+                        return
+                    
+                    # Process each row
+                    for row_num, row in enumerate(reader, start=2):  # Start at 2 since header is row 1
+                        try:
+                            if len(row) < 10:  # We expect 10 columns
+                                print(f"Warning: Row {row_num} has insufficient data, skipping")
+                                continue
+                            
+                            # Parse CSV data
+                            serial_number = int(row[0]) if row[0] else 0
+                            rect_type = row[1]
+                            x = float(row[2])
+                            y = float(row[3])
+                            width = float(row[4])
+                            height = float(row[5])
+                            rotation = float(row[6]) if row[6] else 0
+                            frame_color = row[7] if row[7] else "#8B4513"  # Default brown
+                            fill_color = row[8] if row[8] else ""
+                            is_filled = row[9].lower() in ('true', '1', 'yes') if row[9] else False
+                            
+                            # Create rectangle using the workspace's add_rectangle method
+                            # Parse frame color
+                            frame_qcolor = QColor(frame_color) if frame_color else QColor(139, 69, 19)
+                            
+                            # Create the rectangle
+                            rect = self.workspace.add_rectangle(x, y, width, height, frame_qcolor)
+                            
+                            # Set rotation if specified
+                            if rotation != 0:
+                                rect.current_rotation = rotation
+                                # Apply the rotation transform
+                                rect.setRotation(rotation)
+                            
+                            # Set fill if specified
+                            if is_filled and fill_color:
+                                fill_qcolor = QColor(fill_color)
+                                rect.fill_color = fill_qcolor
+                                rect.is_filled = True
+                                rect.update()  # Trigger repaint
+                            
+                            # Override the auto-assigned serial number with the one from CSV
+                            if hasattr(rect, 'serial_number'):
+                                rect.serial_number = serial_number
+                                # Update the class counter to avoid conflicts
+                                if serial_number >= ScalableRectangle._next_serial_number:
+                                    ScalableRectangle._next_serial_number = serial_number + 1
+                            
+                            rectangles_created += 1
+                            
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Error parsing row {row_num}: {e}, skipping")
+                            continue
+                
+                print(f"Successfully imported {rectangles_created} rectangles from: {file_path}")
+                
+            except Exception as e:
+                print(f"Error importing CSV file: {e}")
     
     def add_rectangle(self):
         # Add rectangle at center of current view
@@ -2281,6 +2419,20 @@ class MainWindow(QMainWindow):
         self.selected_color_display.setFixedSize(30, 20)
         self.selected_color_display.setStyleSheet("border: 1px solid black; background-color: #000000;")
         selected_color_layout.addWidget(self.selected_color_display)
+        
+        # Add transparent color button
+        transparent_btn = QPushButton()
+        transparent_btn.setFixedSize(30, 20)
+        transparent_btn.setStyleSheet(
+            "border: 2px solid black; "
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 white, stop:0.49 white, stop:0.5 red, stop:1 red); "
+            "margin: 0px; padding: 0px;"
+        )
+        transparent_btn.setToolTip("Select Transparent (No Color)")
+        transparent_btn.clicked.connect(self.select_transparent_color)
+        selected_color_layout.addWidget(transparent_btn)
+        
         selected_color_layout.addStretch()
         right_layout.addLayout(selected_color_layout)
         
@@ -2503,6 +2655,16 @@ class MainWindow(QMainWindow):
         """Select a color from the palette"""
         self.selected_color = QColor(color_hex)
         self.selected_color_display.setStyleSheet(f"border: 1px solid black; background-color: {color_hex};")
+    
+    def select_transparent_color(self):
+        """Select transparent as the color"""
+        self.selected_color = QColor(0, 0, 0, 0)  # Transparent color (alpha = 0)
+        # Display the transparent indicator in the selected color display
+        self.selected_color_display.setStyleSheet(
+            "border: 1px solid black; "
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 white, stop:0.49 white, stop:0.5 red, stop:1 red);"
+        )
 
 if __name__ == "__main__":
     import sys
