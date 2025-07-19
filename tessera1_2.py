@@ -1348,6 +1348,14 @@ class WorkspaceView(QGraphicsView):
                     rect_y = y - half_height/2
                     rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, half_height, color)
                     
+                    # Check if fill mode is enabled for half rectangles
+                    if self.main_window and hasattr(self.main_window, 'fill_half_rects_btn') and self.main_window.fill_half_rects_btn.isChecked():
+                        # Fill the newly created half rectangle with black
+                        black_color = QColor(0, 0, 0)
+                        rect.fill_color = black_color
+                        rect.is_filled = True
+                        rect.update()  # Trigger repaint
+                    
                     # Rotate the rectangle to match the smooth angle (no additional offset)
                     # This makes the long side align with the drawn line
                     rect.current_rotation = angle_degrees
@@ -1709,7 +1717,7 @@ class MainWindow(QMainWindow):
     def update_edge_distance(self, text):
         """Update the edge distance based on input"""
         try:
-            distance = float(text) if text else 0.8
+            distance = float(text) if text else 0.65
             # Clamp distance between 0.1 and 10.0
             distance = max(0.1, min(10.0, distance))
             self.workspace.set_edge_distance(distance)
@@ -1784,6 +1792,66 @@ class MainWindow(QMainWindow):
         """Fill selected rectangles with average color"""
         self.workspace.fill_selected_rectangles()
         self.status_label.setText("Filled selected rectangles")
+    
+    def toggle_fill_half_rectangles_mode(self):
+        """Toggle the mode for filling newly drawn half rectangles with black color"""
+        if self.fill_half_rects_btn.isChecked():
+            self.fill_half_rects_btn.setText("Black Half Mode: ON")
+            self.status_label.setText("Black half mode ON - new half rectangles will be black")
+        else:
+            self.fill_half_rects_btn.setText("Black Half Mode: OFF")
+            self.status_label.setText("Black half mode OFF - new half rectangles will be transparent")
+    
+    def fill_half_rectangles_black(self):
+        """Fill all half rectangles (created in edge mode) with black color"""
+        half_rectangles = []
+        
+        # Find all half rectangles in the scene
+        for item in self.workspace.scene.items():
+            if isinstance(item, ScalableRectangle):
+                # Check if this is a half rectangle (height is half of width or width is half of height)
+                rect = item.rect()
+                width = rect.width()
+                height = rect.height()
+                
+                # Consider it a half rectangle if one dimension is roughly half the other
+                # Allow some tolerance for floating point precision
+                tolerance = 0.1
+                if (abs(width - height/2) < tolerance) or (abs(height - width/2) < tolerance):
+                    half_rectangles.append(item)
+        
+        # Fill all half rectangles with black color
+        black_color = QColor(0, 0, 0)  # Black color
+        for rect in half_rectangles:
+            rect.fill_color = black_color
+            rect.is_filled = True
+            rect.update()  # Trigger repaint
+        
+        self.status_label.setText(f"Filled {len(half_rectangles)} half rectangles with black")
+    
+    def unfill_half_rectangles(self):
+        """Remove fill from all half rectangles (make them transparent again)"""
+        half_rectangles = []
+        
+        # Find all half rectangles in the scene
+        for item in self.workspace.scene.items():
+            if isinstance(item, ScalableRectangle):
+                # Check if this is a half rectangle (height is half of width or width is half of height)
+                rect = item.rect()
+                width = rect.width()
+                height = rect.height()
+                
+                # Consider it a half rectangle if one dimension is roughly half the other
+                # Allow some tolerance for floating point precision
+                tolerance = 0.1
+                if (abs(width - height/2) < tolerance) or (abs(height - width/2) < tolerance):
+                    half_rectangles.append(item)
+        
+        # Make all half rectangles transparent again
+        for rect in half_rectangles:
+            rect.set_transparent()
+        
+        self.status_label.setText(f"Unfilled {len(half_rectangles)} half rectangles")
     
     def clear_all(self):
         # Get all rectangles before clearing
@@ -2063,7 +2131,7 @@ class MainWindow(QMainWindow):
         # Edge distance input
         edge_distance_layout = QHBoxLayout()
         edge_distance_layout.addWidget(QLabel("Edge Distance:"))
-        self.edge_distance_input = QLineEdit("0.8")
+        self.edge_distance_input = QLineEdit("0.65")
         self.edge_distance_input.setMaximumWidth(80)
         self.edge_distance_input.setPlaceholderText("Distance")
         self.edge_distance_input.textChanged.connect(self.update_edge_distance)
@@ -2079,6 +2147,13 @@ class MainWindow(QMainWindow):
         self.edge_lines_input.textChanged.connect(self.update_edge_lines_count)
         edge_lines_layout.addWidget(self.edge_lines_input)
         right_layout.addLayout(edge_lines_layout)
+        
+        # Fill half rectangles toggle button
+        self.fill_half_rects_btn = QPushButton("Black Half Mode: OFF")
+        self.fill_half_rects_btn.setCheckable(True)
+        self.fill_half_rects_btn.setChecked(False)
+        self.fill_half_rects_btn.clicked.connect(self.toggle_fill_half_rectangles_mode)
+        right_layout.addWidget(self.fill_half_rects_btn)
         
         # Parallel Settings Section
         parallel_section_label = QLabel("Parallel Settings")
