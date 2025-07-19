@@ -238,9 +238,9 @@ class WorkspaceView(QGraphicsView):
         self.drawing_path = []
         self.current_path_item = None
         self.is_drawing = False
-        self.rectangle_spacing = 1.3  # Default spacing multiplier
+        self.rectangle_spacing = 1.1  # Default spacing multiplier
         self.parallel_mode = False  # Parallel line mode
-        self.parallel_distance_multiplier = 0.7  # Distance multiplier for parallel lines
+        self.parallel_distance_multiplier = 0.6  # Distance multiplier for parallel lines
         self.parallel_lines_count = 1  # Number of parallel lines on each side
         self.second_line_spacing = 1.5  # Spacing multiplier for second parallel line
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
@@ -824,10 +824,21 @@ class WorkspaceView(QGraphicsView):
             if new_rectangles and self.main_window:
                 self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
         elif (self.drawing_mode or self.edge_mode) and event.button() == Qt.LeftButton:
+            # Check if cursor is over an existing rectangle - if so, don't start drawing
+            click_pos = self.mapToScene(event.pos())
+            items_at_pos = self.scene.items(click_pos)
+            rectangle_at_pos = any(isinstance(item, ScalableRectangle) for item in items_at_pos)
+            
+            if rectangle_at_pos:
+                # Don't start drawing if there's a rectangle at the click position
+                # Let the default mouse behavior handle rectangle interaction
+                super().mousePressEvent(event)
+                return
+            
             # Start drawing a path
             self.is_drawing = True
             self.drawing_path = []
-            start_pos = self.mapToScene(event.pos())
+            start_pos = click_pos
             self.drawing_path.append(start_pos)
             
             # Create a path item for visual feedback
@@ -1491,12 +1502,42 @@ class MainWindow(QMainWindow):
     
     def toggle_parallel_mode_right(self):
         """Toggle parallel mode from right taskbar"""
-        self.workspace.set_parallel_mode(self.right_parallel_btn.isChecked())
-        # Update button text
         if self.right_parallel_btn.isChecked():
+            # Turn off other drawing modes when parallel mode is enabled
+            if self.drawing_btn.isChecked():
+                self.drawing_btn.setChecked(False)
+                self.toggle_drawing_mode()
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
+            # Turn off erase mode when parallel mode is enabled
+            if self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
+            # Turn off circle mode when parallel mode is enabled
+            if self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
+            
+            self.workspace.drawing_mode = True
+            self.workspace.parallel_mode = True
+            self.workspace.edge_mode = False
+            self.workspace.setDragMode(QGraphicsView.NoDrag)
+            # Use drawing cursor since circle mode is now disabled
+            self.workspace.setCursor(self.workspace.drawing_cursor)
             self.right_parallel_btn.setText("Parallel Mode: ON")
+            self.status_label.setText("Parallel mode active")
         else:
+            self.workspace.drawing_mode = False
+            self.workspace.parallel_mode = False
+            self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
+            # Use circle cursor if circle mode is on, otherwise use default cursor
+            if self.workspace.circle_mode:
+                self.workspace.setCursor(self.workspace.circle_cursor)
+            else:
+                self.workspace.setCursor(Qt.ArrowCursor)
             self.right_parallel_btn.setText("Parallel Mode: OFF")
+            self.status_label.setText("Ready")
     
     def create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -1573,7 +1614,7 @@ class MainWindow(QMainWindow):
     def update_rectangle_spacing(self, text):
         """Update the rectangle spacing based on input"""
         try:
-            spacing = float(text) if text else 1.3
+            spacing = float(text) if text else 1.1
             # Clamp spacing between 0.1 and 10.0
             spacing = max(0.1, min(10.0, spacing))
             self.workspace.set_rectangle_spacing(spacing)
@@ -1586,7 +1627,7 @@ class MainWindow(QMainWindow):
     def update_parallel_distance(self, text):
         """Update the parallel distance based on input"""
         try:
-            distance = float(text) if text else 0.7
+            distance = float(text) if text else 0.6
             # Clamp distance between 0.5 and 10.0
             distance = max(0.5, min(10.0, distance))
             self.workspace.set_parallel_distance(distance)
@@ -1647,34 +1688,41 @@ class MainWindow(QMainWindow):
             pass
     
     def toggle_drawing_mode(self):
-        """Toggle drawing mode from the taskbar"""
-        self.workspace.drawing_mode = self.drawing_btn.isChecked()
-        if self.workspace.drawing_mode:
+        """Toggle single line drawing mode from the taskbar"""
+        if self.drawing_btn.isChecked():
+            # Turn off other drawing modes when single line mode is enabled
+            if self.right_parallel_btn.isChecked():
+                self.right_parallel_btn.setChecked(False)
+                self.toggle_parallel_mode_right()
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
             # Turn off erase mode when drawing mode is enabled
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
-            # Turn off edge mode when drawing mode is enabled
-            if self.edge_btn.isChecked():
-                self.edge_btn.setChecked(False)
-                self.toggle_edge_mode()
+            # Turn off circle mode when drawing mode is enabled
+            if self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
             
+            self.workspace.drawing_mode = True
+            self.workspace.parallel_mode = False
+            self.workspace.edge_mode = False
             self.workspace.setDragMode(QGraphicsView.NoDrag)
-            # Use circle cursor if circle mode is on, otherwise use drawing cursor
-            if self.workspace.circle_mode:
-                self.workspace.setCursor(self.workspace.circle_cursor)
-            else:
-                self.workspace.setCursor(self.workspace.drawing_cursor)
-            self.drawing_btn.setText("Drawing: ON")
-            self.status_label.setText("Drawing mode active")
+            # Use drawing cursor since circle mode is now disabled
+            self.workspace.setCursor(self.workspace.drawing_cursor)
+            self.drawing_btn.setText("Single Line: ON")
+            self.status_label.setText("Single Line mode active")
         else:
+            self.workspace.drawing_mode = False
             self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
             # Use circle cursor if circle mode is on, otherwise use default cursor
             if self.workspace.circle_mode:
                 self.workspace.setCursor(self.workspace.circle_cursor)
             else:
                 self.workspace.setCursor(Qt.ArrowCursor)
-            self.drawing_btn.setText("Drawing: OFF")
+            self.drawing_btn.setText("Single Line: OFF")
             self.status_label.setText("Ready")
     
     def add_half_width_rectangle(self):
@@ -1848,7 +1896,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(basic_settings_label)
         
         # Add drawing mode toggle
-        self.drawing_btn = QPushButton("Drawing: OFF")
+        self.drawing_btn = QPushButton("Single Line: OFF")
         self.drawing_btn.setCheckable(True)
         self.drawing_btn.setChecked(False)
         self.drawing_btn.clicked.connect(self.toggle_drawing_mode)
@@ -1949,7 +1997,7 @@ class MainWindow(QMainWindow):
         # Parallel distance input
         parallel_distance_layout = QHBoxLayout()
         parallel_distance_layout.addWidget(QLabel("Parallel Distance:"))
-        self.right_parallel_distance_input = QLineEdit("0.7")
+        self.right_parallel_distance_input = QLineEdit("0.6")
         self.right_parallel_distance_input.setMaximumWidth(80)
         self.right_parallel_distance_input.setPlaceholderText("Distance")
         self.right_parallel_distance_input.textChanged.connect(self.update_parallel_distance)
@@ -1969,7 +2017,7 @@ class MainWindow(QMainWindow):
         # Rectangle spacing input
         spacing_layout = QHBoxLayout()
         spacing_layout.addWidget(QLabel("Line Spacing:"))
-        self.right_spacing_input = QLineEdit("1.3")
+        self.right_spacing_input = QLineEdit("1.1")
         self.right_spacing_input.setMaximumWidth(80)
         self.right_spacing_input.setPlaceholderText("Spacing")
         self.right_spacing_input.textChanged.connect(self.update_rectangle_spacing)
@@ -2008,14 +2056,19 @@ class MainWindow(QMainWindow):
         """Toggle circle mode"""
         self.workspace.set_circle_mode(self.circle_btn.isChecked())
         if self.circle_btn.isChecked():
-            # Turn off erase mode when circle mode is enabled
-            if self.erase_btn.isChecked():
-                self.erase_btn.setChecked(False)
-                self.toggle_erase_mode()
-            # Turn off edge mode when circle mode is enabled
+            # Turn off all drawing modes when circle mode is enabled
+            if self.drawing_btn.isChecked():
+                self.drawing_btn.setChecked(False)
+                self.toggle_drawing_mode()
+            if self.right_parallel_btn.isChecked():
+                self.right_parallel_btn.setChecked(False)
+                self.toggle_parallel_mode_right()
             if self.edge_btn.isChecked():
                 self.edge_btn.setChecked(False)
                 self.toggle_edge_mode()
+            if self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
             self.circle_btn.setText("Circle Mode: ON")
         else:
             self.circle_btn.setText("Circle Mode: OFF")
@@ -2025,36 +2078,58 @@ class MainWindow(QMainWindow):
         self.workspace.set_erase_mode(self.erase_btn.isChecked())
         if self.erase_btn.isChecked():
             self.erase_btn.setText("Erase Mode: ON")
-            # Turn off other modes when erase mode is enabled
+            # Turn off all drawing modes when erase mode is enabled
             if self.drawing_btn.isChecked():
                 self.drawing_btn.setChecked(False)
                 self.toggle_drawing_mode()
-            if self.circle_btn.isChecked():
-                self.circle_btn.setChecked(False)
-                self.toggle_circle_mode()
+            if self.right_parallel_btn.isChecked():
+                self.right_parallel_btn.setChecked(False)
+                self.toggle_parallel_mode_right()
             if self.edge_btn.isChecked():
                 self.edge_btn.setChecked(False)
                 self.toggle_edge_mode()
+            if self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
         else:
             self.erase_btn.setText("Erase Mode: OFF")
     
     def toggle_edge_mode(self):
         """Toggle edge mode"""
-        self.workspace.set_edge_mode(self.edge_btn.isChecked())
         if self.edge_btn.isChecked():
-            self.edge_btn.setText("Edge Mode: ON")
-            # Turn off other modes when edge mode is enabled
+            # Turn off other drawing modes when edge mode is enabled
             if self.drawing_btn.isChecked():
                 self.drawing_btn.setChecked(False)
                 self.toggle_drawing_mode()
+            if self.right_parallel_btn.isChecked():
+                self.right_parallel_btn.setChecked(False)
+                self.toggle_parallel_mode_right()
+            # Turn off other modes when edge mode is enabled
             if self.circle_btn.isChecked():
                 self.circle_btn.setChecked(False)
                 self.toggle_circle_mode()
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
+            
+            self.workspace.drawing_mode = True
+            self.workspace.parallel_mode = False
+            self.workspace.edge_mode = True
+            self.workspace.setDragMode(QGraphicsView.NoDrag)
+            self.workspace.setCursor(self.workspace.drawing_cursor)
+            self.edge_btn.setText("Edge Mode: ON")
+            self.status_label.setText("Edge mode active")
         else:
+            self.workspace.drawing_mode = False
+            self.workspace.edge_mode = False
+            self.workspace.setDragMode(QGraphicsView.RubberBandDrag)
+            # Reset to appropriate cursor based on current mode
+            if self.workspace.circle_mode:
+                self.workspace.setCursor(self.workspace.circle_cursor)
+            else:
+                self.workspace.setCursor(Qt.ArrowCursor)
             self.edge_btn.setText("Edge Mode: OFF")
+            self.status_label.setText("Ready")
     
     def toggle_half_rectangle_mode(self):
         """Toggle half rectangle mode"""
