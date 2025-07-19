@@ -62,7 +62,11 @@ class ScalableRectangle(QGraphicsRectItem):
             # Use cached overlap state if available, otherwise assume no overlap
             overlap_info = getattr(self, '_cached_overlap_info', None)
         
-        if overlap_info:
+        # If rectangle is filled with color, use that color for both pen and brush
+        if self.is_filled and self.fill_color != Qt.transparent:
+            painter.setPen(QPen(self.fill_color, 0.5))  # Frame in fill color
+            painter.setBrush(QBrush(self.fill_color))    # Interior in fill color
+        elif overlap_info:
             overlapping, is_newer = overlap_info
             if overlapping:
                 if is_newer:
@@ -166,7 +170,7 @@ class ScalableRectangle(QGraphicsRectItem):
         self.setRotation(self.current_rotation)
     
     def fill_with_average_color(self):
-        """Fill the rectangle with the average color of pixels in its area"""
+        """Fill the rectangle with the color of the center pixel"""
         if not self.scene():
             return
         
@@ -180,63 +184,31 @@ class ScalableRectangle(QGraphicsRectItem):
         if not background_item:
             return
         
-        # Get the rectangle's bounds in scene coordinates
-        rect_in_scene = self.mapToScene(self.rect()).boundingRect()
+        # Get the center point of the rectangle in scene coordinates
+        rect_center = self.mapToScene(self.rect().center())
         
         # Get the background pixmap
         pixmap = background_item.pixmap()
         image = pixmap.toImage()
         
-        # Calculate the intersection of rectangle with image bounds
-        image_rect = QRectF(background_item.pos(), QRectF(pixmap.rect()).size())
-        intersection = rect_in_scene.intersected(image_rect)
-        
-        if intersection.isEmpty():
-            return
-        
-        # Convert to image coordinates (relative to background item position)
+        # Convert center point to image coordinates (relative to background item position)
         bg_pos = background_item.pos()
-        sample_rect = QRectF(
-            intersection.x() - bg_pos.x(),
-            intersection.y() - bg_pos.y(),
-            intersection.width(),
-            intersection.height()
-        )
+        center_x = rect_center.x() - bg_pos.x()
+        center_y = rect_center.y() - bg_pos.y()
         
-        # Ensure we don't go outside image bounds
-        sample_rect = sample_rect.intersected(QRectF(0, 0, image.width(), image.height()))
-        
-        if sample_rect.isEmpty():
+        # Ensure the center point is within image bounds
+        if (center_x < 0 or center_x >= image.width() or 
+            center_y < 0 or center_y >= image.height()):
             return
         
-        # Sample pixels and calculate average color
-        total_red = 0
-        total_green = 0
-        total_blue = 0
-        pixel_count = 0
+        # Get the pixel color at the center point
+        pixel = image.pixel(int(center_x), int(center_y))
+        center_color = QColor(pixel)
         
-        x_start = max(0, int(sample_rect.x()))
-        y_start = max(0, int(sample_rect.y()))
-        x_end = min(image.width(), int(sample_rect.x() + sample_rect.width()))
-        y_end = min(image.height(), int(sample_rect.y() + sample_rect.height()))
-        
-        for y in range(y_start, y_end):
-            for x in range(x_start, x_end):
-                pixel = image.pixel(x, y)
-                color = QColor(pixel)
-                total_red += color.red()
-                total_green += color.green()
-                total_blue += color.blue()
-                pixel_count += 1
-        
-        if pixel_count > 0:
-            avg_red = total_red // pixel_count
-            avg_green = total_green // pixel_count
-            avg_blue = total_blue // pixel_count
-            
-            self.fill_color = QColor(avg_red, avg_green, avg_blue)
-            self.is_filled = True
-            self.update()  # Trigger repaint
+        # Set the fill color to the center pixel color
+        self.fill_color = center_color
+        self.is_filled = True
+        self.update()  # Trigger repaint
     
     def set_transparent(self):
         """Make the rectangle transparent"""
@@ -447,6 +419,33 @@ class WorkspaceView(QGraphicsView):
         
         # Update scene rect to fit the scaled image
         self.scene.setSceneRect(QRectF(scaled_pixmap.rect()))
+    
+    def set_solid_color_background(self, color):
+        """Set a solid color background"""
+        # Remove existing background
+        if self.background_item:
+            self.scene.removeItem(self.background_item)
+        
+        # Use the same dimensions as the original background if available, otherwise default size
+        if self.original_background_pixmap:
+            width = self.original_background_pixmap.width()
+            height = self.original_background_pixmap.height()
+        else:
+            # Default size if no original background
+            width = 2000
+            height = 1100
+        
+        # Create a solid color pixmap
+        solid_pixmap = QPixmap(width, height)
+        solid_pixmap.fill(color)
+        
+        # Add the solid color background
+        self.background_item = QGraphicsPixmapItem(solid_pixmap)
+        self.background_item.setZValue(-1)  # Put it behind everything
+        self.scene.addItem(self.background_item)
+        
+        # Update scene rect to fit the solid background
+        self.scene.setSceneRect(QRectF(solid_pixmap.rect()))
     
     def add_rectangle(self, x, y, width=100, height=100, color=None):
         rect = ScalableRectangle(x, y, width, height, color)
@@ -1873,11 +1872,19 @@ class MainWindow(QMainWindow):
                 rectangles.append(item)
         
         if self.color_mode:
-            # Fill all rectangles with their average color
+            # First: Fill all rectangles with their center pixel color from the original image
             for rect in rectangles:
                 rect.fill_with_average_color()
+            
+            # Then: Replace background with solid color from selected color
+            self.workspace.set_solid_color_background(self.selected_color)
+            
             self.color_btn.setText("Transparent")
         else:
+            # Restore original background image
+            if self.workspace.original_background_pixmap:
+                self.workspace.set_background_image(self.workspace.original_background_pixmap)
+            
             # Make all rectangles transparent
             for rect in rectangles:
                 rect.set_transparent()
