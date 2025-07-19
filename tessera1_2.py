@@ -278,6 +278,9 @@ class WorkspaceView(QGraphicsView):
         self.is_erasing = False  # Track if currently erasing with drag
         self.erased_rectangles = []  # Track rectangles erased in current operation
         
+        # Paint mode variables
+        self.paint_mode = False  # Paint mode for filling rectangles with selected color
+        
         # Edge mode variables
         self.edge_mode = False  # Edge mode for drawing central half rectangles with regular rectangles on sides
         
@@ -778,6 +781,25 @@ class WorkspaceView(QGraphicsView):
             else:
                 self.setCursor(Qt.ArrowCursor)
     
+    def set_paint_mode(self, enabled):
+        """Enable or disable paint mode"""
+        self.paint_mode = enabled
+        
+        # Update cursor based on paint mode
+        if self.paint_mode:
+            # Use a custom paint cursor (we'll use the drawing cursor for now)
+            self.setCursor(self.drawing_cursor)
+        else:
+            # Reset to appropriate cursor based on current mode
+            if self.erase_mode:
+                self.setCursor(self.erase_cursor)
+            elif self.circle_mode:
+                self.setCursor(self.circle_cursor)
+            elif self.drawing_mode:
+                self.setCursor(self.drawing_cursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+    
     def set_edge_mode(self, enabled):
         """Enable or disable edge mode"""
         if enabled:
@@ -859,7 +881,20 @@ class WorkspaceView(QGraphicsView):
         v_scroll.setValue(v_scroll.value() + dy)
     
     def mousePressEvent(self, event):
-        if self.erase_mode and event.button() == Qt.LeftButton:
+        if self.paint_mode and event.button() == Qt.LeftButton:
+            # Paint mode: fill clicked rectangle with selected color
+            scene_pos = self.mapToScene(event.pos())
+            items_at_pos = self.scene.items(scene_pos)
+            
+            # Find the first rectangle at this position and paint it
+            for item in items_at_pos:
+                if isinstance(item, ScalableRectangle):
+                    # Fill the rectangle with the selected color
+                    item.fill_color = self.main_window.selected_color if self.main_window else QColor(0, 0, 0)
+                    item.is_filled = True
+                    item.update()  # Trigger repaint
+                    break  # Only paint the top-most rectangle
+        elif self.erase_mode and event.button() == Qt.LeftButton:
             # Start erasing on left click
             self.is_erasing = True
             self.erased_rectangles = []  # Track erased rectangles for undo
@@ -1585,6 +1620,11 @@ class MainWindow(QMainWindow):
             if self.edge_btn.isChecked():
                 self.edge_btn.setChecked(False)
                 self.edge_btn.setText("Edge Mode: OFF")
+            
+            # Turn off paint mode when parallel mode is enabled
+            if self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
                 
             self.right_parallel_btn.setText("Parallel Mode: ON")
         else:
@@ -1761,6 +1801,11 @@ class MainWindow(QMainWindow):
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
+            
+            # Turn off paint mode when drawing mode is enabled
+            if self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
             
             self.drawing_btn.setText("Drawing: ON")
             self.status_label.setText("Drawing mode active")
@@ -2227,6 +2272,13 @@ class MainWindow(QMainWindow):
         # Create color palette grid
         self.create_color_palette(right_layout)
         
+        # Add paint mode button
+        self.paint_btn = QPushButton("Paint Mode: OFF")
+        self.paint_btn.setCheckable(True)
+        self.paint_btn.setChecked(False)
+        self.paint_btn.clicked.connect(self.toggle_paint_mode)
+        right_layout.addWidget(self.paint_btn)
+        
         # Add stretch to push everything to the top
         right_layout.addStretch()
 
@@ -2252,6 +2304,11 @@ class MainWindow(QMainWindow):
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
+            
+            # Turn off paint mode when circle mode is enabled
+            if self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
                 
             self.circle_btn.setText("Circle Mode: ON")
         else:
@@ -2272,8 +2329,38 @@ class MainWindow(QMainWindow):
             if self.edge_btn.isChecked():
                 self.edge_btn.setChecked(False)
                 self.toggle_edge_mode()
+            if self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
         else:
             self.erase_btn.setText("Erase Mode: OFF")
+    
+    def toggle_paint_mode(self):
+        """Toggle paint mode"""
+        self.workspace.set_paint_mode(self.paint_btn.isChecked())
+        if self.paint_btn.isChecked():
+            self.paint_btn.setText("Paint Mode: ON")
+            # Turn off other modes when paint mode is enabled
+            if self.drawing_btn.isChecked():
+                self.drawing_btn.setChecked(False)
+                self.toggle_drawing_mode()
+            if self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
+            if self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
+            if self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
+            if self.half_rect_btn.isChecked():
+                self.half_rect_btn.setChecked(False)
+                self.toggle_half_rectangle_mode()
+            if self.right_parallel_btn.isChecked():
+                self.right_parallel_btn.setChecked(False)
+                self.toggle_parallel_mode_right()
+        else:
+            self.paint_btn.setText("Paint Mode: OFF")
     
     def toggle_edge_mode(self):
         """Toggle edge mode"""
@@ -2297,6 +2384,11 @@ class MainWindow(QMainWindow):
             if self.erase_btn.isChecked():
                 self.erase_btn.setChecked(False)
                 self.toggle_erase_mode()
+            
+            # Turn off paint mode when edge mode is enabled
+            if self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
                 
             self.edge_btn.setText("Edge Mode: ON")
         else:
@@ -2319,6 +2411,11 @@ class MainWindow(QMainWindow):
             if self.right_parallel_btn.isChecked():
                 self.right_parallel_btn.setChecked(False)
                 self.right_parallel_btn.setText("Parallel Mode: OFF")
+            
+            # Turn off paint mode when half rectangle mode is enabled
+            if self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
                 
             self.half_rect_btn.setText("Half Rectangle: ON")
         else:
