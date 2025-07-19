@@ -258,7 +258,7 @@ class WorkspaceView(QGraphicsView):
         self.fifth_line_spacing = 1.85  # Spacing multiplier for fifth parallel line
         
         # Edge mode variables - separate from parallel mode
-        self.edge_distance_multiplier = 0.6  # Distance multiplier for edge mode side lines
+        self.edge_distance_multiplier = 0.65  # Distance multiplier for edge mode side lines
         self.edge_lines_count = 2  # Number of side lines on each side in edge mode
         self.edge_first_line_spacing = 1.5  # Spacing multiplier for first edge side line
         self.edge_second_line_spacing = 1.8  # Spacing multiplier for second edge side line
@@ -1940,9 +1940,15 @@ class MainWindow(QMainWindow):
                 rectangles.append(item)
         
         if self.color_mode:
-            # First: Fill all rectangles with their center pixel color from the original image
+            # Store which rectangles were already filled before color mode
+            self.rectangles_filled_by_color_mode = []
+            
+            # First: Fill only transparent rectangles with their center pixel color from the original image
+            # Keep existing solid fills unchanged
             for rect in rectangles:
-                rect.fill_with_average_color()
+                if not rect.is_filled:  # Only fill rectangles that are currently transparent
+                    rect.fill_with_average_color()
+                    self.rectangles_filled_by_color_mode.append(rect)  # Track these for later
             
             # Then: Replace background with solid color from selected color
             self.workspace.set_solid_color_background(self.selected_color)
@@ -1953,9 +1959,15 @@ class MainWindow(QMainWindow):
             if self.workspace.original_background_pixmap:
                 self.workspace.set_background_image(self.workspace.original_background_pixmap)
             
-            # Make all rectangles transparent
-            for rect in rectangles:
-                rect.set_transparent()
+            # Make only rectangles that were filled by color mode transparent
+            # Keep rectangles that had solid fills before color mode
+            if hasattr(self, 'rectangles_filled_by_color_mode'):
+                for rect in self.rectangles_filled_by_color_mode:
+                    if rect in rectangles:  # Make sure rectangle still exists
+                        rect.set_transparent()
+                # Clear the tracking list
+                self.rectangles_filled_by_color_mode = []
+            
             self.color_btn.setText("Color")
     
     def undo_last_action(self):
