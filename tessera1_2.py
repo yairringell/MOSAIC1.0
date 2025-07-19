@@ -1241,8 +1241,13 @@ class WorkspaceView(QGraphicsView):
         if len(path) < 2:
             return path
         
-        # Calculate the target spacing between points
-        target_spacing = self.rectangle_size * self.rectangle_spacing
+        # Calculate minimum spacing to prevent overlaps for regular rectangles
+        # Use rectangle size plus small buffer instead of diagonal (less conservative)
+        min_spacing = self.rectangle_size * 1.1  # Just 10% buffer instead of full diagonal
+        
+        # Use the larger of user-defined spacing or minimum spacing
+        user_spacing = self.rectangle_size * self.rectangle_spacing
+        target_spacing = max(min_spacing, user_spacing)
         
         # Create a new path with consistent spacing
         resampled = [path[0]]  # Always include the first point
@@ -1291,8 +1296,13 @@ class WorkspaceView(QGraphicsView):
         if len(path) < 2:
             return
         
-        # Calculate spacing between rectangles based on rectangle size
-        spacing = self.rectangle_size * self.rectangle_spacing
+        # Calculate minimum spacing to prevent overlaps - more reasonable approach
+        # Use rectangle size plus small buffer instead of full diagonal
+        min_spacing = self.rectangle_size * 1.1  # Just 10% buffer
+        
+        # Use the larger of user-defined spacing or minimum spacing
+        user_spacing = self.rectangle_size * self.rectangle_spacing
+        spacing = max(min_spacing, user_spacing)
         
         # Sample points along the path at regular intervals
         total_distance = 0
@@ -1342,8 +1352,13 @@ class WorkspaceView(QGraphicsView):
         if len(path) < 2:
             return
         
-        # Calculate spacing between rectangles based on rectangle size
-        spacing = self.rectangle_size * self.rectangle_spacing
+        # Calculate minimum spacing for half rectangles - more reasonable approach
+        # Use the longer dimension plus small buffer
+        min_spacing = self.rectangle_size * 1.1  # Just 10% buffer since rotation is managed
+        
+        # Use the larger of user-defined spacing or minimum spacing
+        user_spacing = self.rectangle_size * self.rectangle_spacing
+        spacing = max(min_spacing, user_spacing)
         
         # Sample points along the path at regular intervals
         total_distance = 0
