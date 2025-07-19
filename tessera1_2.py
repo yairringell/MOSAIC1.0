@@ -55,17 +55,28 @@ class ScalableRectangle(QGraphicsRectItem):
         
         # Check for overlaps if allowed, otherwise use cached state
         if should_check_overlaps:
-            overlapping = self.check_for_overlaps()
+            overlap_info = self.check_for_overlaps_with_color()
             # Cache the overlap state for use during zoom
-            self._cached_overlapping = overlapping
+            self._cached_overlap_info = overlap_info
         else:
             # Use cached overlap state if available, otherwise assume no overlap
-            overlapping = getattr(self, '_cached_overlapping', False)
+            overlap_info = getattr(self, '_cached_overlap_info', None)
         
-        if overlapping:
-            # Change appearance for overlapping rectangles
-            painter.setPen(QPen(Qt.red, 0.5))  # Thinnest possible red frame
-            painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
+        if overlap_info:
+            overlapping, is_newer = overlap_info
+            if overlapping:
+                if is_newer:
+                    # This rectangle is newer (higher serial number) - show in red
+                    painter.setPen(QPen(Qt.red, 0.5))  # Thinnest possible red frame
+                    painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
+                else:
+                    # This rectangle is older (lower serial number) - show in green
+                    painter.setPen(QPen(Qt.green, 0.5))  # Thinnest possible green frame
+                    painter.setBrush(QBrush(QColor(0, 255, 0, 100)))  # Semi-transparent green fill
+            else:
+                # Normal appearance - use the rectangle's pen and transparent brush
+                painter.setPen(self.pen())
+                painter.setBrush(QBrush(Qt.transparent))
         else:
             # Normal appearance - use the rectangle's pen and transparent brush
             painter.setPen(self.pen())
@@ -90,6 +101,28 @@ class ScalableRectangle(QGraphicsRectItem):
                 if self.collidesWithItem(item):
                     return True
         return False
+    
+    def check_for_overlaps_with_color(self):
+        """Check if this rectangle overlaps and determine color based on serial number comparison"""
+        if not self.scene():
+            return None
+        
+        # Get nearby items only (within a reasonable distance)
+        search_rect = self.sceneBoundingRect().adjusted(-50, -50, 50, 50)
+        nearby_items = self.scene().items(search_rect)
+        
+        # Check only nearby rectangles
+        for item in nearby_items:
+            if isinstance(item, ScalableRectangle) and item != self:
+                # Quick bounding box check first
+                if self.collidesWithItem(item):
+                    # Found an overlap, determine color based on serial numbers
+                    # Return (overlapping=True, is_newer=True/False)
+                    is_newer = self.serial_number > item.serial_number
+                    return (True, is_newer)
+        
+        # No overlaps found
+        return (False, False)
     
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -243,7 +276,7 @@ class WorkspaceView(QGraphicsView):
         self.drawing_path = []
         self.current_path_item = None
         self.is_drawing = False
-        self.rectangle_spacing = 1.3  # Default spacing multiplier
+        self.rectangle_spacing = 1.16  # Default spacing multiplier
         self.parallel_mode = False  # Parallel line mode
         self.parallel_distance_multiplier = 0.7  # Distance multiplier for parallel lines
         self.parallel_lines_count = 1  # Number of parallel lines on each side
@@ -425,53 +458,6 @@ class WorkspaceView(QGraphicsView):
         
         return rect
     
-    def remove_overlapping_rectangles(self):
-        """Remove overlapping rectangles, keeping the older one (lower serial number) - using existing overlap detection"""
-        rectangles = []
-        for item in self.scene.items():
-            if isinstance(item, ScalableRectangle):
-                rectangles.append(item)
-        
-        if len(rectangles) < 2:
-            return 0  # No overlaps possible with less than 2 rectangles
-        
-        rectangles_to_remove = []
-        
-        # Use existing check_for_overlaps method for each rectangle
-        for rect in rectangles:
-            if rect in rectangles_to_remove:
-                continue
-                
-            # Use the existing optimized overlap detection
-            if rect.check_for_overlaps():
-                # Find which specific rectangles this one overlaps with
-                search_rect = rect.sceneBoundingRect().adjusted(-50, -50, 50, 50)
-                nearby_items = self.scene.items(search_rect)
-                
-                for item in nearby_items:
-                    if (isinstance(item, ScalableRectangle) and 
-                        item != rect and 
-                        item not in rectangles_to_remove and
-                        rect.collidesWithItem(item)):
-                        
-                        # Remove the one with the higher serial number (created later)
-                        if rect.serial_number > item.serial_number:
-                            rectangles_to_remove.append(rect)
-                            break  # No need to check this rectangle further
-                        else:
-                            rectangles_to_remove.append(item)
-        
-        # Remove the overlapping rectangles
-        for rect in rectangles_to_remove:
-            self.scene.removeItem(rect)
-        
-        # Force update of remaining rectangles to clear red coloring
-        for rect in rectangles:
-            if rect not in rectangles_to_remove:
-                rect.update()
-        
-        return len(rectangles_to_remove)
-    
     def create_circle_of_rectangles(self, center_pos):
         """Create a circle of rectangles around a center position with a central rectangle at 45 degrees"""
         # Get selected color
@@ -556,12 +542,6 @@ class WorkspaceView(QGraphicsView):
                 
                 rect.current_rotation = angle_degrees
                 rect.setRotation(angle_degrees)
-        
-        # Check if auto overlap removal is enabled
-        if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
-            removed_count = self.remove_overlapping_rectangles()
-            if removed_count > 0 and hasattr(self.main_window, 'status_label'):
-                self.main_window.status_label.setText(f"Circle created - Auto-removed {removed_count} overlapping rectangles")
     
 
     
@@ -902,12 +882,6 @@ class WorkspaceView(QGraphicsView):
             
             if new_rectangles and self.main_window:
                 self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
-            
-            # Check if auto overlap removal is enabled
-            if self.main_window and hasattr(self.main_window, 'auto_overlap_checkbox') and self.main_window.auto_overlap_checkbox.isChecked():
-                removed_count = self.remove_overlapping_rectangles()
-                if removed_count > 0 and hasattr(self.main_window, 'status_label'):
-                    self.main_window.status_label.setText(f"Auto-removed {removed_count} overlapping rectangles")
             
             # Clear the path
             self.drawing_path = []
@@ -1455,10 +1429,15 @@ class MainWindow(QMainWindow):
         self.color_btn.clicked.connect(self.toggle_color_mode)
         toolbar_layout.addWidget(self.color_btn)
         
-        # Add overlap removal button
-        self.overlap_btn = QPushButton("Overlap")
-        self.overlap_btn.clicked.connect(self.remove_overlapping_rectangles)
-        toolbar_layout.addWidget(self.overlap_btn)
+        # Add delete red button
+        self.delete_red_btn = QPushButton("Delete Red")
+        self.delete_red_btn.clicked.connect(self.delete_red_rectangles)
+        toolbar_layout.addWidget(self.delete_red_btn)
+        
+        # Add delete green button
+        self.delete_green_btn = QPushButton("Delete Green")
+        self.delete_green_btn.clicked.connect(self.delete_green_rectangles)
+        toolbar_layout.addWidget(self.delete_green_btn)
         
         toolbar_layout.addStretch()
         main_layout.addLayout(toolbar_layout)
@@ -1584,7 +1563,7 @@ class MainWindow(QMainWindow):
     def update_rectangle_spacing(self, text):
         """Update the rectangle spacing based on input"""
         try:
-            spacing = float(text) if text else 1.3
+            spacing = float(text) if text else 1.16
             # Clamp spacing between 0.1 and 10.0
             spacing = max(0.1, min(10.0, spacing))
             self.workspace.set_rectangle_spacing(spacing)
@@ -1729,6 +1708,66 @@ class MainWindow(QMainWindow):
             if item != self.workspace.background_item and not item.type() == 8:  # 8 is QGraphicsTextItem
                 self.workspace.scene.removeItem(item)
     
+    def delete_red_rectangles(self):
+        """Delete all rectangles that are currently marked in red (newer rectangles in overlaps)"""
+        # Get all rectangles in the scene
+        all_rectangles = []
+        red_rectangles = []
+        
+        for item in self.workspace.scene.items():
+            if isinstance(item, ScalableRectangle):
+                all_rectangles.append(item)
+                
+                # Check if this rectangle would be painted red
+                overlap_info = item.check_for_overlaps_with_color()
+                if overlap_info:
+                    overlapping, is_newer = overlap_info
+                    if overlapping and is_newer:
+                        # This rectangle is newer (higher serial number) - it's displayed in red
+                        red_rectangles.append(item)
+        
+        # Add to undo stack before deleting
+        if red_rectangles:
+            self.add_to_undo_stack('delete_red_rectangles', red_rectangles)
+            
+            # Remove the red rectangles
+            for rect in red_rectangles:
+                self.workspace.scene.removeItem(rect)
+            
+            self.status_label.setText(f"Deleted {len(red_rectangles)} red rectangles")
+        else:
+            self.status_label.setText("No red rectangles found to delete")
+    
+    def delete_green_rectangles(self):
+        """Delete all rectangles that are currently marked in green (older rectangles in overlaps)"""
+        # Get all rectangles in the scene
+        all_rectangles = []
+        green_rectangles = []
+        
+        for item in self.workspace.scene.items():
+            if isinstance(item, ScalableRectangle):
+                all_rectangles.append(item)
+                
+                # Check if this rectangle would be painted green
+                overlap_info = item.check_for_overlaps_with_color()
+                if overlap_info:
+                    overlapping, is_newer = overlap_info
+                    if overlapping and not is_newer:
+                        # This rectangle is older (lower serial number) - it's displayed in green
+                        green_rectangles.append(item)
+        
+        # Add to undo stack before deleting
+        if green_rectangles:
+            self.add_to_undo_stack('delete_green_rectangles', green_rectangles)
+            
+            # Remove the green rectangles
+            for rect in green_rectangles:
+                self.workspace.scene.removeItem(rect)
+            
+            self.status_label.setText(f"Deleted {len(green_rectangles)} green rectangles")
+        else:
+            self.status_label.setText("No green rectangles found to delete")
+    
     def toggle_color_mode(self):
         """Toggle between colored and transparent rectangles"""
         self.color_mode = not self.color_mode
@@ -1750,14 +1789,6 @@ class MainWindow(QMainWindow):
                 rect.set_transparent()
             self.color_btn.setText("Color")
     
-    def remove_overlapping_rectangles(self):
-        """Remove overlapping rectangles, keeping the older ones"""
-        removed_count = self.workspace.remove_overlapping_rectangles()
-        if removed_count > 0:
-            self.status_label.setText(f"Removed {removed_count} overlapping rectangles")
-        else:
-            self.status_label.setText("No overlapping rectangles found")
-    
     def undo_last_action(self):
         """Undo the last action"""
         if self.undo_stack:
@@ -1778,6 +1809,16 @@ class MainWindow(QMainWindow):
                 for rect in last_action['rectangles']:
                     self.workspace.scene.addItem(rect)
                 self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} erased rectangles")
+            elif last_action['type'] == 'delete_red_rectangles':
+                # Restore the rectangles that were deleted
+                for rect in last_action['rectangles']:
+                    self.workspace.scene.addItem(rect)
+                self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} red rectangles")
+            elif last_action['type'] == 'delete_green_rectangles':
+                # Restore the rectangles that were deleted
+                for rect in last_action['rectangles']:
+                    self.workspace.scene.addItem(rect)
+                self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} green rectangles")
         else:
             self.status_label.setText("Nothing to undo")
     
@@ -1882,13 +1923,6 @@ class MainWindow(QMainWindow):
         size_layout.addWidget(self.right_size_input)
         right_layout.addLayout(size_layout)
         
-        # Auto-cleanup checkbox
-        self.auto_overlap_checkbox = QPushButton("Auto Remove Overlaps: OFF")
-        self.auto_overlap_checkbox.setCheckable(True)
-        self.auto_overlap_checkbox.setChecked(False)
-        self.auto_overlap_checkbox.clicked.connect(self.toggle_auto_overlap)
-        right_layout.addWidget(self.auto_overlap_checkbox)
-        
         # Circle mode toggle
         self.circle_btn = QPushButton("Circle Mode: OFF")
         self.circle_btn.setCheckable(True)
@@ -1980,7 +2014,7 @@ class MainWindow(QMainWindow):
         # Rectangle spacing input
         spacing_layout = QHBoxLayout()
         spacing_layout.addWidget(QLabel("Line Spacing:"))
-        self.right_spacing_input = QLineEdit("1.3")
+        self.right_spacing_input = QLineEdit("1.16")
         self.right_spacing_input.setMaximumWidth(80)
         self.right_spacing_input.setPlaceholderText("Spacing")
         self.right_spacing_input.textChanged.connect(self.update_rectangle_spacing)
@@ -2008,13 +2042,6 @@ class MainWindow(QMainWindow):
         # Add stretch to push everything to the top
         right_layout.addStretch()
 
-    def toggle_auto_overlap(self):
-        """Toggle auto overlap removal mode"""
-        if self.auto_overlap_checkbox.isChecked():
-            self.auto_overlap_checkbox.setText("Auto Remove Overlaps: ON")
-        else:
-            self.auto_overlap_checkbox.setText("Auto Remove Overlaps: OFF")
-    
     def toggle_circle_mode(self):
         """Toggle circle mode"""
         self.workspace.set_circle_mode(self.circle_btn.isChecked())
