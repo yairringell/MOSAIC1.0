@@ -270,7 +270,7 @@ class WorkspaceView(QGraphicsView):
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
         self.fourth_line_spacing = 1.8  # Spacing multiplier for fourth parallel line
         self.fifth_line_spacing = 1.85  # Spacing multiplier for fifth parallel line
-        
+        #1
         # Edge mode variables - separate from parallel mode
         self.edge_distance_multiplier = 0.65  # Distance multiplier for edge mode side lines
         self.edge_lines_count = 2  # Number of side lines on each side in edge mode
