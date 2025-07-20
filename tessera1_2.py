@@ -5,9 +5,10 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene,
                            QGraphicsView, QVBoxLayout, QWidget, QMenuBar, 
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
                            QGraphicsRectItem, QGraphicsPixmapItem, QLineEdit, QLabel,
-                           QGraphicsLineItem, QGraphicsPathItem, QSlider, QGridLayout)
+                           QGraphicsLineItem, QGraphicsPathItem, QSlider, QGridLayout,
+                           QGraphicsPolygonItem)
 from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer
-from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor
+from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor, QPolygonF
 
 class ScalableRectangle(QGraphicsRectItem):
     # Class variable to track rectangle creation order
@@ -112,9 +113,9 @@ class ScalableRectangle(QGraphicsRectItem):
         search_rect = self.sceneBoundingRect().adjusted(-50, -50, 50, 50)
         nearby_items = self.scene().items(search_rect)
         
-        # Check only nearby rectangles
+        # Check only nearby rectangles and triangles
         for item in nearby_items:
-            if isinstance(item, ScalableRectangle) and item != self:
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)) and item != self:
                 # Quick bounding box check first
                 if self.collidesWithItem(item):
                     return True
@@ -129,9 +130,9 @@ class ScalableRectangle(QGraphicsRectItem):
         search_rect = self.sceneBoundingRect().adjusted(-50, -50, 50, 50)
         nearby_items = self.scene().items(search_rect)
         
-        # Check only nearby rectangles
+        # Check both nearby rectangles and triangles
         for item in nearby_items:
-            if isinstance(item, ScalableRectangle) and item != self:
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)) and item != self:
                 # Quick bounding box check first
                 if self.collidesWithItem(item):
                     # Found an overlap, determine color based on serial numbers
@@ -161,7 +162,7 @@ class ScalableRectangle(QGraphicsRectItem):
         return super().itemChange(change, value)
     
     def update_nearby_rectangles(self):
-        """Update only nearby rectangles for better performance"""
+        """Update only nearby rectangles and triangles for better performance"""
         if not self.scene():
             return
         
@@ -170,7 +171,7 @@ class ScalableRectangle(QGraphicsRectItem):
         nearby_items = self.scene().items(search_rect)
         
         for item in nearby_items:
-            if isinstance(item, ScalableRectangle):
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
                 item.update()
     
     def rotate_clockwise(self):
@@ -229,6 +230,218 @@ class ScalableRectangle(QGraphicsRectItem):
         self.is_filled = False
         self.update()  # Trigger repaint
 
+class ScalableTriangle(QGraphicsPolygonItem):
+    # Class variable to track triangle creation order
+    _next_serial_number = 1
+    
+    def __init__(self, x, y, size, initial_color=None):
+        # Create a 90-degree right triangle with sides as the rectangle size
+        triangle_points = [
+            QPointF(0, 0),              # Top-left corner
+            QPointF(size, 0),           # Top-right corner 
+            QPointF(0, size)            # Bottom-left corner
+        ]
+        triangle_polygon = QPolygonF(triangle_points)
+        
+        super().__init__(triangle_polygon)
+        
+        # Set position
+        self.setPos(x, y)
+        
+        # Set flags for interaction
+        self.setFlag(QGraphicsPolygonItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsPolygonItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsPolygonItem.ItemSendsGeometryChanges, True)
+        
+        # Set appearance
+        self.setPen(QPen(QColor(139, 69, 19), 0.5))  # Brown frame (saddle brown)
+        
+        # Enable mouse tracking for selection
+        self.setAcceptHoverEvents(True)
+        self.current_rotation = 0  # Track current rotation angle
+        self.is_filled = False  # Track if triangle is filled with average color
+        self.fill_color = Qt.transparent  # Store the fill color
+        self.size = size  # Store the triangle size
+        
+        # Set initial color if provided - only for frame/border
+        if initial_color and initial_color.alpha() > 0:  # Not transparent
+            self.setPen(QPen(initial_color, 0.5))  # Apply color to frame with thinnest width
+        else:
+            self.setPen(QPen(QColor(139, 69, 19), 0.5))  # Default brown frame with thinnest width
+        
+        self.setBrush(QBrush(Qt.transparent))  # Always transparent fill
+        
+        # Assign serial number and increment for next triangle
+        self.serial_number = ScalableTriangle._next_serial_number
+        ScalableTriangle._next_serial_number += 1
+        
+        # Set rotation center to the center of the triangle
+        triangle_center = triangle_polygon.boundingRect().center()
+        self.setTransformOriginPoint(triangle_center)
+    
+    def paint(self, painter, option, widget):
+        # Determine if we should check for overlaps (avoid during batch operations or zooming)
+        should_check_overlaps = not ((hasattr(self.scene(), 'batch_operation') and self.scene().batch_operation) or \
+                                   (hasattr(self.scene(), 'is_zooming') and self.scene().is_zooming))
+        
+        # Check for overlaps if allowed, otherwise use cached state
+        if should_check_overlaps:
+            overlap_info = self.check_for_overlaps_with_color()
+            # Cache the overlap state for use during zoom
+            self._cached_overlap_info = overlap_info
+        else:
+            # Use cached overlap state if available, otherwise assume no overlap
+            overlap_info = getattr(self, '_cached_overlap_info', None)
+        
+        # Check for overlaps first, then apply fill colors
+        if overlap_info:
+            overlapping, is_newer = overlap_info
+            if overlapping:
+                if is_newer:
+                    # This triangle is newer (higher serial number) - show red frame
+                    painter.setPen(QPen(Qt.red, 0.5))  # Red frame for overlapping newer triangle
+                    # Use fill color for interior if filled, otherwise semi-transparent red
+                    if self.is_filled and self.fill_color != Qt.transparent:
+                        painter.setBrush(QBrush(self.fill_color))  # Keep original fill color
+                    else:
+                        painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
+                else:
+                    # This triangle is older (lower serial number) - show green frame
+                    painter.setPen(QPen(Qt.green, 0.5))  # Green frame for overlapping older triangle
+                    # Use fill color for interior if filled, otherwise semi-transparent green
+                    if self.is_filled and self.fill_color != Qt.transparent:
+                        painter.setBrush(QBrush(self.fill_color))  # Keep original fill color
+                    else:
+                        painter.setBrush(QBrush(QColor(0, 255, 0, 100)))  # Semi-transparent green fill
+            else:
+                # No overlap - use normal appearance
+                if self.is_filled and self.fill_color != Qt.transparent:
+                    painter.setPen(QPen(self.fill_color, 0.5))  # Frame in fill color
+                    painter.setBrush(QBrush(self.fill_color))    # Interior in fill color
+                else:
+                    painter.setPen(self.pen())
+                    painter.setBrush(QBrush(Qt.transparent))
+        else:
+            # No overlap info available - use normal appearance
+            if self.is_filled and self.fill_color != Qt.transparent:
+                painter.setPen(QPen(self.fill_color, 0.5))  # Frame in fill color
+                painter.setBrush(QBrush(self.fill_color))    # Interior in fill color
+            else:
+                painter.setPen(self.pen())
+                painter.setBrush(QBrush(Qt.transparent))
+        
+        # Draw the triangle
+        painter.drawPolygon(self.polygon())
+    
+    def check_for_overlaps_with_color(self):
+        """Check if this triangle overlaps and determine color based on serial number comparison"""
+        if not self.scene():
+            return None
+        
+        # Get nearby items only (within a reasonable distance)
+        search_rect = self.sceneBoundingRect().adjusted(-50, -50, 50, 50)
+        nearby_items = self.scene().items(search_rect)
+        
+        # Check both nearby rectangles and triangles
+        for item in nearby_items:
+            if (isinstance(item, (ScalableRectangle, ScalableTriangle)) and item != self):
+                # Quick bounding box check first
+                if self.collidesWithItem(item):
+                    # Found an overlap, determine color based on serial numbers
+                    # Return (overlapping=True, is_newer=True/False)
+                    is_newer = self.serial_number > item.serial_number
+                    return (True, is_newer)
+        
+        # No overlaps found
+        return (False, False)
+    
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        # Only update nearby shapes when this one is released (moved)
+        self.update_nearby_shapes()
+    
+    def itemChange(self, change, value):
+        # Reduce the frequency of updates during position changes
+        if change == self.ItemPositionChange and self.scene():
+            # Don't update during every position change, only on release
+            pass
+        return super().itemChange(change, value)
+    
+    def update_nearby_shapes(self):
+        """Update only nearby shapes for better performance"""
+        if not self.scene():
+            return
+        
+        # Get nearby items only
+        search_rect = self.sceneBoundingRect().adjusted(-100, -100, 100, 100)
+        nearby_items = self.scene().items(search_rect)
+        
+        for item in nearby_items:
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                item.update()
+    
+    def rotate_clockwise(self):
+        # Rotate 1 degree clockwise
+        self.current_rotation += 1
+        self.setRotation(self.current_rotation)
+    
+    def rotate_counter_clockwise(self):
+        # Rotate 1 degree counter-clockwise
+        self.current_rotation -= 1
+        self.setRotation(self.current_rotation)
+    
+    def fill_with_average_color(self):
+        """Fill the triangle with the color of the center pixel"""
+        if not self.scene():
+            return
+        
+        # Find the background image item
+        background_item = None
+        for item in self.scene().items():
+            if isinstance(item, QGraphicsPixmapItem):
+                background_item = item
+                break
+        
+        if not background_item:
+            return
+        
+        # Get the center point of the triangle in scene coordinates
+        triangle_center = self.mapToScene(self.polygon().boundingRect().center())
+        
+        # Get the background pixmap
+        pixmap = background_item.pixmap()
+        image = pixmap.toImage()
+        
+        # Convert center point to image coordinates (relative to background item position)
+        bg_pos = background_item.pos()
+        center_x = triangle_center.x() - bg_pos.x()
+        center_y = triangle_center.y() - bg_pos.y()
+        
+        # Ensure the center point is within image bounds
+        if (center_x < 0 or center_x >= image.width() or 
+            center_y < 0 or center_y >= image.height()):
+            return
+        
+        # Get the pixel color at the center point
+        pixel = image.pixel(int(center_x), int(center_y))
+        center_color = QColor(pixel)
+        
+        # Set the fill color to the center pixel color
+        self.fill_color = center_color
+        self.is_filled = True
+        self.update()  # Trigger repaint
+    
+    def set_transparent(self):
+        """Make the triangle transparent"""
+        self.is_filled = False
+        self.update()  # Trigger repaint
+
 class WorkspaceView(QGraphicsView):
     def __init__(self, main_window=None):
         super().__init__()
@@ -270,7 +483,7 @@ class WorkspaceView(QGraphicsView):
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
         self.fourth_line_spacing = 1.8  # Spacing multiplier for fourth parallel line
         self.fifth_line_spacing = 1.85  # Spacing multiplier for fifth parallel line
-        #1
+        
         # Edge mode variables - separate from parallel mode
         self.edge_distance_multiplier = 0.65  # Distance multiplier for edge mode side lines
         self.edge_lines_count = 2  # Number of side lines on each side in edge mode
@@ -454,6 +667,16 @@ class WorkspaceView(QGraphicsView):
             self.main_window.add_to_undo_stack('add_rectangles', [rect])
         
         return rect
+    
+    def add_triangle(self, x, y, size, color=None):
+        triangle = ScalableTriangle(x, y, size, color)
+        self.scene.addItem(triangle)
+        
+        # Track for undo if main window exists and not in batch operation
+        if self.main_window and not (hasattr(self.scene, 'batch_operation') and self.scene.batch_operation):
+            self.main_window.add_to_undo_stack('add_triangles', [triangle])
+        
+        return triangle
     
     def create_circle_of_rectangles(self, center_pos):
         """Create a circle of rectangles around a center position with a central rectangle at 45 degrees"""
@@ -826,47 +1049,47 @@ class WorkspaceView(QGraphicsView):
                 self.setCursor(Qt.ArrowCursor)
     
     def erase_rectangles_at_position(self, pos):
-        """Erase any rectangles at the given position"""
+        """Erase any rectangles or triangles at the given position"""
         # Get the scene position
         scene_pos = self.mapToScene(pos)
         
-        # Find rectangles at this position
+        # Find rectangles and triangles at this position
         items_at_pos = self.scene.items(scene_pos)
-        rectangles_to_remove = []
+        shapes_to_remove = []
         
         for item in items_at_pos:
-            if isinstance(item, ScalableRectangle):
-                rectangles_to_remove.append(item)
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                shapes_to_remove.append(item)
         
-        # Remove the rectangles
-        for rect in rectangles_to_remove:
-            self.scene.removeItem(rect)
+        # Remove the shapes
+        for shape in shapes_to_remove:
+            self.scene.removeItem(shape)
         
-        return rectangles_to_remove
+        return shapes_to_remove
     
 
     
     def rotate_selected_rectangles(self, clockwise):
-        # Rotate all selected rectangles
+        # Rotate all selected rectangles and triangles
         for item in self.scene.selectedItems():
-            if isinstance(item, ScalableRectangle):
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
                 if clockwise:
                     item.rotate_clockwise()
                 else:
                     item.rotate_counter_clockwise()
     
     def delete_selected_rectangles(self):
-        # Delete all selected rectangles
+        # Delete all selected rectangles and triangles
         selected_items = self.scene.selectedItems()
         for item in selected_items:
-            if isinstance(item, ScalableRectangle):
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
                 self.scene.removeItem(item)
     
     def fill_selected_rectangles(self):
-        # Fill all selected rectangles with their average color
+        # Fill all selected rectangles and triangles with their average color
         selected_items = self.scene.selectedItems()
         for item in selected_items:
-            if isinstance(item, ScalableRectangle):
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
                 item.fill_with_average_color()
     
     def pan_workspace(self, dx, dy):
@@ -881,23 +1104,23 @@ class WorkspaceView(QGraphicsView):
     
     def mousePressEvent(self, event):
         if self.paint_mode and event.button() == Qt.LeftButton:
-            # Paint mode: fill clicked rectangle with selected color or make transparent
+            # Paint mode: fill clicked rectangle or triangle with selected color or make transparent
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
             
-            # Find the first rectangle at this position and paint it
+            # Find the first rectangle or triangle at this position and paint it
             for item in items_at_pos:
-                if isinstance(item, ScalableRectangle):
+                if isinstance(item, (ScalableRectangle, ScalableTriangle)):
                     # Check if selected color is transparent
                     selected_color = self.main_window.selected_color if self.main_window else QColor(0, 0, 0)
                     if selected_color.alpha() == 0:  # Transparent color selected
                         item.set_transparent()
                     else:
-                        # Fill the rectangle with the selected color
+                        # Fill the shape with the selected color
                         item.fill_color = selected_color
                         item.is_filled = True
                         item.update()  # Trigger repaint
-                    break  # Only paint the top-most rectangle
+                    break  # Only paint the top-most shape
         elif self.erase_mode and event.button() == Qt.LeftButton:
             # Start erasing on left click
             self.is_erasing = True
@@ -905,12 +1128,12 @@ class WorkspaceView(QGraphicsView):
             erased = self.erase_rectangles_at_position(event.pos())
             self.erased_rectangles.extend(erased)
         elif self.circle_mode and event.button() == Qt.LeftButton:
-            # Check if clicking on a rectangle - if so, don't create circle
+            # Check if clicking on a rectangle or triangle - if so, don't create circle
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
-            rectangle_at_pos = any(isinstance(item, ScalableRectangle) for item in items_at_pos)
+            shape_at_pos = any(isinstance(item, (ScalableRectangle, ScalableTriangle)) for item in items_at_pos)
             
-            if not rectangle_at_pos:
+            if not shape_at_pos:
                 # Track rectangles before creating circle
                 rectangles_before = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
                 
@@ -924,15 +1147,15 @@ class WorkspaceView(QGraphicsView):
                 if new_rectangles and self.main_window:
                     self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
             else:
-                # If clicking on rectangle, pass event to parent for normal selection behavior
+                # If clicking on shape, pass event to parent for normal selection behavior
                 super().mousePressEvent(event)
         elif (self.drawing_mode or self.edge_mode or self.parallel_mode or self.half_rectangle_mode) and event.button() == Qt.LeftButton:
-            # Check if clicking on a rectangle - if so, don't start drawing
+            # Check if clicking on a rectangle or triangle - if so, don't start drawing
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
-            rectangle_at_pos = any(isinstance(item, ScalableRectangle) for item in items_at_pos)
+            shape_at_pos = any(isinstance(item, (ScalableRectangle, ScalableTriangle)) for item in items_at_pos)
             
-            if not rectangle_at_pos:
+            if not shape_at_pos:
                 # Start drawing a path
                 self.is_drawing = True
                 self.drawing_path = []
@@ -945,7 +1168,7 @@ class WorkspaceView(QGraphicsView):
                 self.current_path_item.setPen(QPen(QColor(139, 69, 19), 2))
                 self.scene.addItem(self.current_path_item)
             else:
-                # If clicking on rectangle, pass event to parent for normal selection behavior
+                # If clicking on shape, pass event to parent for normal selection behavior
                 super().mousePressEvent(event)
         else:
             super().mousePressEvent(event)
@@ -1721,7 +1944,7 @@ class MainWindow(QMainWindow):
                     # Write header
                     writer.writerow(['Serial_Number', 'Type', 'X', 'Y', 'Width', 'Height', 'Rotation', 'Frame_Color', 'Fill_Color', 'Is_Filled'])
                     
-                    # Get all ScalableRectangle items from the scene
+                    # Get all ScalableRectangle and ScalableTriangle items from the scene
                     for item in self.workspace.scene.items():
                         if isinstance(item, ScalableRectangle):
                             # Get serial number
@@ -1747,6 +1970,46 @@ class MainWindow(QMainWindow):
                             x = pos.x() + rect.x()
                             y = pos.y() + rect.y()
                             width, height = rect.width(), rect.height()
+                            
+                            # Get rotation
+                            rotation = item.current_rotation if hasattr(item, 'current_rotation') else 0
+                            
+                            # Get frame color (pen color)
+                            pen_color = item.pen().color()
+                            frame_color = pen_color.name()  # Hex format
+                            
+                            # Get fill color if exists
+                            fill_color = ""
+                            is_filled = False
+                            if hasattr(item, 'is_filled') and item.is_filled:
+                                is_filled = True
+                                if hasattr(item, 'fill_color'):
+                                    fill_color = item.fill_color.name()
+                                else:
+                                    # Get from brush if available
+                                    brush_color = item.brush().color()
+                                    if brush_color.alpha() > 0:
+                                        fill_color = brush_color.name()
+                            
+                            # Write row
+                            writer.writerow([serial_number, rect_type, x, y, width, height, rotation, frame_color, fill_color, is_filled])
+                        
+                        elif isinstance(item, ScalableTriangle):
+                            # Get serial number
+                            serial_number = item.serial_number if hasattr(item, 'serial_number') else 0
+                            
+                            # Triangle type
+                            rect_type = "Triangle"
+                            
+                            # Get position and size from the triangle's internal data
+                            pos = item.pos()  # Item's position in scene
+                            size = item.size  # Triangle's size
+                            
+                            # For triangles, use position directly and size for both width and height
+                            x = pos.x()
+                            y = pos.y()
+                            width = size
+                            height = size
                             
                             # Get rotation
                             rotation = item.current_rotation if hasattr(item, 'current_rotation') else 0
@@ -1813,32 +2076,43 @@ class MainWindow(QMainWindow):
                             fill_color = row[8] if row[8] else ""
                             is_filled = row[9].lower() in ('true', '1', 'yes') if row[9] else False
                             
-                            # Create rectangle using the workspace's add_rectangle method
+                            # Create rectangle or triangle based on type
                             # Parse frame color
                             frame_qcolor = QColor(frame_color) if frame_color else QColor(139, 69, 19)
                             
-                            # Create the rectangle
-                            rect = self.workspace.add_rectangle(x, y, width, height, frame_qcolor)
+                            if rect_type == "Triangle":
+                                # Create triangle using the workspace's add_triangle method
+                                shape = self.workspace.add_triangle(x, y, width, frame_qcolor)
+                                
+                                # Override the auto-assigned serial number with the one from CSV
+                                if hasattr(shape, 'serial_number'):
+                                    shape.serial_number = serial_number
+                                    # Update the class counter to avoid conflicts
+                                    if serial_number >= ScalableTriangle._next_serial_number:
+                                        ScalableTriangle._next_serial_number = serial_number + 1
+                            else:
+                                # Create rectangle using the workspace's add_rectangle method
+                                shape = self.workspace.add_rectangle(x, y, width, height, frame_qcolor)
+                                
+                                # Override the auto-assigned serial number with the one from CSV
+                                if hasattr(shape, 'serial_number'):
+                                    shape.serial_number = serial_number
+                                    # Update the class counter to avoid conflicts
+                                    if serial_number >= ScalableRectangle._next_serial_number:
+                                        ScalableRectangle._next_serial_number = serial_number + 1
                             
                             # Set rotation if specified
                             if rotation != 0:
-                                rect.current_rotation = rotation
+                                shape.current_rotation = rotation
                                 # Apply the rotation transform
-                                rect.setRotation(rotation)
+                                shape.setRotation(rotation)
                             
                             # Set fill if specified
                             if is_filled and fill_color:
                                 fill_qcolor = QColor(fill_color)
-                                rect.fill_color = fill_qcolor
-                                rect.is_filled = True
-                                rect.update()  # Trigger repaint
-                            
-                            # Override the auto-assigned serial number with the one from CSV
-                            if hasattr(rect, 'serial_number'):
-                                rect.serial_number = serial_number
-                                # Update the class counter to avoid conflicts
-                                if serial_number >= ScalableRectangle._next_serial_number:
-                                    ScalableRectangle._next_serial_number = serial_number + 1
+                                shape.fill_color = fill_qcolor
+                                shape.is_filled = True
+                                shape.update()  # Trigger repaint
                             
                             rectangles_created += 1
                             
@@ -2013,6 +2287,16 @@ class MainWindow(QMainWindow):
         self.workspace.add_rectangle(rect_x, rect_y, half_size, half_size, self.selected_color)
         self.status_label.setText("Added small rectangle")
     
+    def add_triangle(self):
+        """Add 90-degree triangle with sides as rectangle size"""
+        center = self.workspace.mapToScene(self.workspace.rect().center())
+        size = self.workspace.rectangle_size
+        triangle_x = center.x() - size/2
+        triangle_y = center.y() - size/2
+        
+        self.workspace.add_triangle(triangle_x, triangle_y, size, self.selected_color)
+        self.status_label.setText("Added triangle")
+    
     def fill_selected_rectangles(self):
         """Fill selected rectangles with average color"""
         self.workspace.fill_selected_rectangles()
@@ -2095,85 +2379,85 @@ class MainWindow(QMainWindow):
                 self.workspace.scene.removeItem(item)
     
     def delete_red_rectangles(self):
-        """Delete all rectangles that are currently marked in red (newer rectangles in overlaps)"""
-        # Get all rectangles in the scene
-        all_rectangles = []
-        red_rectangles = []
+        """Delete all rectangles and triangles that are currently marked in red (newer shapes in overlaps)"""
+        # Get all rectangles and triangles in the scene
+        all_shapes = []
+        red_shapes = []
         
         for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                all_rectangles.append(item)
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                all_shapes.append(item)
                 
-                # Check if this rectangle would be painted red
+                # Check if this shape would be painted red
                 overlap_info = item.check_for_overlaps_with_color()
                 if overlap_info:
                     overlapping, is_newer = overlap_info
                     if overlapping and is_newer:
-                        # This rectangle is newer (higher serial number) - it's displayed in red
-                        red_rectangles.append(item)
+                        # This shape is newer (higher serial number) - it's displayed in red
+                        red_shapes.append(item)
         
         # Add to undo stack before deleting
-        if red_rectangles:
-            self.add_to_undo_stack('delete_red_rectangles', red_rectangles)
+        if red_shapes:
+            self.add_to_undo_stack('delete_red_rectangles', red_shapes)
             
-            # Remove the red rectangles
-            for rect in red_rectangles:
-                self.workspace.scene.removeItem(rect)
+            # Remove the red shapes
+            for shape in red_shapes:
+                self.workspace.scene.removeItem(shape)
             
-            self.status_label.setText(f"Deleted {len(red_rectangles)} red rectangles")
+            self.status_label.setText(f"Deleted {len(red_shapes)} red shapes")
         else:
-            self.status_label.setText("No red rectangles found to delete")
+            self.status_label.setText("No red shapes found to delete")
     
     def delete_green_rectangles(self):
-        """Delete all rectangles that are currently marked in green (older rectangles in overlaps)"""
-        # Get all rectangles in the scene
-        all_rectangles = []
-        green_rectangles = []
+        """Delete all rectangles and triangles that are currently marked in green (older shapes in overlaps)"""
+        # Get all rectangles and triangles in the scene
+        all_shapes = []
+        green_shapes = []
         
         for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                all_rectangles.append(item)
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                all_shapes.append(item)
                 
-                # Check if this rectangle would be painted green
+                # Check if this shape would be painted green
                 overlap_info = item.check_for_overlaps_with_color()
                 if overlap_info:
                     overlapping, is_newer = overlap_info
                     if overlapping and not is_newer:
-                        # This rectangle is older (lower serial number) - it's displayed in green
-                        green_rectangles.append(item)
+                        # This shape is older (lower serial number) - it's displayed in green
+                        green_shapes.append(item)
         
         # Add to undo stack before deleting
-        if green_rectangles:
-            self.add_to_undo_stack('delete_green_rectangles', green_rectangles)
+        if green_shapes:
+            self.add_to_undo_stack('delete_green_rectangles', green_shapes)
             
-            # Remove the green rectangles
-            for rect in green_rectangles:
-                self.workspace.scene.removeItem(rect)
+            # Remove the green shapes
+            for shape in green_shapes:
+                self.workspace.scene.removeItem(shape)
             
-            self.status_label.setText(f"Deleted {len(green_rectangles)} green rectangles")
+            self.status_label.setText(f"Deleted {len(green_shapes)} green shapes")
         else:
-            self.status_label.setText("No green rectangles found to delete")
+            self.status_label.setText("No green shapes found to delete")
     
     def toggle_color_mode(self):
-        """Toggle between colored and transparent rectangles"""
+        """Toggle between colored and transparent rectangles and triangles"""
         self.color_mode = not self.color_mode
         
-        # Get all rectangles in the scene
-        rectangles = []
+        # Get all rectangles and triangles in the scene
+        shapes = []
         for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                rectangles.append(item)
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                shapes.append(item)
         
         if self.color_mode:
-            # Store which rectangles were already filled before color mode
-            self.rectangles_filled_by_color_mode = []
+            # Store which shapes were already filled before color mode
+            self.shapes_filled_by_color_mode = []
             
-            # First: Fill only transparent rectangles with their center pixel color from the original image
+            # First: Fill only transparent shapes with their center pixel color from the original image
             # Keep existing solid fills unchanged
-            for rect in rectangles:
-                if not rect.is_filled:  # Only fill rectangles that are currently transparent
-                    rect.fill_with_average_color()
-                    self.rectangles_filled_by_color_mode.append(rect)  # Track these for later
+            for shape in shapes:
+                if not shape.is_filled:  # Only fill shapes that are currently transparent
+                    shape.fill_with_average_color()
+                    self.shapes_filled_by_color_mode.append(shape)  # Track these for later
             
             # Then: Replace background with solid color from selected color
             self.workspace.set_solid_color_background(self.selected_color)
@@ -2184,14 +2468,14 @@ class MainWindow(QMainWindow):
             if self.workspace.original_background_pixmap:
                 self.workspace.set_background_image(self.workspace.original_background_pixmap)
             
-            # Make only rectangles that were filled by color mode transparent
-            # Keep rectangles that had solid fills before color mode
-            if hasattr(self, 'rectangles_filled_by_color_mode'):
-                for rect in self.rectangles_filled_by_color_mode:
-                    if rect in rectangles:  # Make sure rectangle still exists
-                        rect.set_transparent()
+            # Make only shapes that were filled by color mode transparent
+            # Keep shapes that had solid fills before color mode
+            if hasattr(self, 'shapes_filled_by_color_mode'):
+                for shape in self.shapes_filled_by_color_mode:
+                    if shape in shapes:  # Make sure shape still exists
+                        shape.set_transparent()
                 # Clear the tracking list
-                self.rectangles_filled_by_color_mode = []
+                self.shapes_filled_by_color_mode = []
             
             self.color_btn.setText("Color")
     
@@ -2269,6 +2553,10 @@ class MainWindow(QMainWindow):
         small_rect_btn = QPushButton("Small Rectangle (O)")
         small_rect_btn.clicked.connect(self.add_small_rectangle)
         left_layout.addWidget(small_rect_btn)
+        
+        triangle_btn = QPushButton("Triangle")
+        triangle_btn.clicked.connect(self.add_triangle)
+        left_layout.addWidget(triangle_btn)
         
         # Add rectangle actions section
         actions_label = QLabel("Rectangle Actions")
