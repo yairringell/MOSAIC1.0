@@ -63,29 +63,42 @@ class ScalableRectangle(QGraphicsRectItem):
             # Use cached overlap state if available, otherwise assume no overlap
             overlap_info = getattr(self, '_cached_overlap_info', None)
         
-        # If rectangle is filled with color, use that color for both pen and brush
-        if self.is_filled and self.fill_color != Qt.transparent:
-            painter.setPen(QPen(self.fill_color, 0.5))  # Frame in fill color
-            painter.setBrush(QBrush(self.fill_color))    # Interior in fill color
-        elif overlap_info:
+        # Check for overlaps first, then apply fill colors
+        if overlap_info:
             overlapping, is_newer = overlap_info
             if overlapping:
                 if is_newer:
-                    # This rectangle is newer (higher serial number) - show in red
-                    painter.setPen(QPen(Qt.red, 0.5))  # Thinnest possible red frame
-                    painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
+                    # This rectangle is newer (higher serial number) - show red frame
+                    painter.setPen(QPen(Qt.red, 0.5))  # Red frame for overlapping newer rectangle
+                    # Use fill color for interior if filled, otherwise semi-transparent red
+                    if self.is_filled and self.fill_color != Qt.transparent:
+                        painter.setBrush(QBrush(self.fill_color))  # Keep original fill color
+                    else:
+                        painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill
                 else:
-                    # This rectangle is older (lower serial number) - show in green
-                    painter.setPen(QPen(Qt.green, 0.5))  # Thinnest possible green frame
-                    painter.setBrush(QBrush(QColor(0, 255, 0, 100)))  # Semi-transparent green fill
+                    # This rectangle is older (lower serial number) - show green frame
+                    painter.setPen(QPen(Qt.green, 0.5))  # Green frame for overlapping older rectangle
+                    # Use fill color for interior if filled, otherwise semi-transparent green
+                    if self.is_filled and self.fill_color != Qt.transparent:
+                        painter.setBrush(QBrush(self.fill_color))  # Keep original fill color
+                    else:
+                        painter.setBrush(QBrush(QColor(0, 255, 0, 100)))  # Semi-transparent green fill
             else:
-                # Normal appearance - use the rectangle's pen and transparent brush
+                # No overlap - use normal appearance
+                if self.is_filled and self.fill_color != Qt.transparent:
+                    painter.setPen(QPen(self.fill_color, 0.5))  # Frame in fill color
+                    painter.setBrush(QBrush(self.fill_color))    # Interior in fill color
+                else:
+                    painter.setPen(self.pen())
+                    painter.setBrush(QBrush(Qt.transparent))
+        else:
+            # No overlap info available - use normal appearance
+            if self.is_filled and self.fill_color != Qt.transparent:
+                painter.setPen(QPen(self.fill_color, 0.5))  # Frame in fill color
+                painter.setBrush(QBrush(self.fill_color))    # Interior in fill color
+            else:
                 painter.setPen(self.pen())
                 painter.setBrush(QBrush(Qt.transparent))
-        else:
-            # Normal appearance - use the rectangle's pen and transparent brush
-            painter.setPen(self.pen())
-            painter.setBrush(QBrush(Qt.transparent))
         
         # Draw the rectangle
         painter.drawRect(self.rect())
@@ -251,7 +264,7 @@ class WorkspaceView(QGraphicsView):
         self.is_drawing = False
         self.rectangle_spacing = 1.16  # Default spacing multiplier
         self.parallel_mode = False  # Parallel line mode
-        self.parallel_distance_multiplier = 0.7  # Distance multiplier for parallel lines
+        self.parallel_distance_multiplier = 0.62  # Distance multiplier for parallel lines
         self.parallel_lines_count = 1  # Number of parallel lines on each side
         self.second_line_spacing = 1.5  # Spacing multiplier for second parallel line
         self.third_line_spacing = 1.7  # Spacing multiplier for third parallel line
@@ -261,6 +274,7 @@ class WorkspaceView(QGraphicsView):
         # Edge mode variables - separate from parallel mode
         self.edge_distance_multiplier = 0.65  # Distance multiplier for edge mode side lines
         self.edge_lines_count = 2  # Number of side lines on each side in edge mode
+        self.edge_line_spacing = 1.16  # Line spacing multiplier specifically for edge drawing
         self.edge_first_line_spacing = 1.5  # Spacing multiplier for first edge side line
         self.edge_second_line_spacing = 1.8  # Spacing multiplier for second edge side line
         self.edge_third_line_spacing = 2.0  # Spacing multiplier for third edge side line
@@ -631,6 +645,10 @@ class WorkspaceView(QGraphicsView):
     def set_edge_lines_count(self, count):
         """Set the number of side lines on each side in edge mode"""
         self.edge_lines_count = count
+    
+    def set_edge_line_spacing(self, spacing):
+        """Set the line spacing multiplier specifically for edge drawing"""
+        self.edge_line_spacing = spacing
     
     def set_edge_first_line_spacing(self, spacing):
         """Set the spacing multiplier for the first edge side line"""
@@ -1222,7 +1240,7 @@ class WorkspaceView(QGraphicsView):
             if right_path:
                 self.create_rectangles_along_specific_path(right_path)
     
-    def resample_path_by_distance(self, path):
+    def resample_path_by_distance(self, path, spacing_multiplier=None):
         """Resample a path to have consistent point spacing based on rectangle spacing"""
         if len(path) < 2:
             return path
@@ -1231,8 +1249,11 @@ class WorkspaceView(QGraphicsView):
         # Use rectangle size plus small buffer instead of diagonal (less conservative)
         min_spacing = self.rectangle_size * 1.1  # Just 10% buffer instead of full diagonal
         
-        # Use the larger of user-defined spacing or minimum spacing
-        user_spacing = self.rectangle_size * self.rectangle_spacing
+        # Use the provided spacing multiplier or default to rectangle_spacing
+        if spacing_multiplier is not None:
+            user_spacing = self.rectangle_size * spacing_multiplier
+        else:
+            user_spacing = self.rectangle_size * self.rectangle_spacing
         target_spacing = max(min_spacing, user_spacing)
         
         # Create a new path with consistent spacing
@@ -1277,7 +1298,7 @@ class WorkspaceView(QGraphicsView):
         
         return resampled
     
-    def create_rectangles_along_specific_path(self, path):
+    def create_rectangles_along_specific_path(self, path, spacing_multiplier=None):
         """Create rectangles along a specific path (used for parallel lines)"""
         if len(path) < 2:
             return
@@ -1286,8 +1307,11 @@ class WorkspaceView(QGraphicsView):
         # Use rectangle size plus small buffer instead of full diagonal
         min_spacing = self.rectangle_size * 1.1  # Just 10% buffer
         
-        # Use the larger of user-defined spacing or minimum spacing
-        user_spacing = self.rectangle_size * self.rectangle_spacing
+        # Use the provided spacing multiplier or default to rectangle_spacing
+        if spacing_multiplier is not None:
+            user_spacing = self.rectangle_size * spacing_multiplier
+        else:
+            user_spacing = self.rectangle_size * self.rectangle_spacing
         spacing = max(min_spacing, user_spacing)
         
         # Sample points along the path at regular intervals
@@ -1333,7 +1357,7 @@ class WorkspaceView(QGraphicsView):
             
             current_distance += segment_distance
     
-    def create_half_rectangles_along_path(self, path):
+    def create_half_rectangles_along_path(self, path, spacing_multiplier=None):
         """Create half-width rectangles along a specific path (only for single line drawing)"""
         if len(path) < 2:
             return
@@ -1342,8 +1366,11 @@ class WorkspaceView(QGraphicsView):
         # Use the longer dimension plus small buffer
         min_spacing = self.rectangle_size * 1.1  # Just 10% buffer since rotation is managed
         
-        # Use the larger of user-defined spacing or minimum spacing
-        user_spacing = self.rectangle_size * self.rectangle_spacing
+        # Use the provided spacing multiplier or default to rectangle_spacing
+        if spacing_multiplier is not None:
+            user_spacing = self.rectangle_size * spacing_multiplier
+        else:
+            user_spacing = self.rectangle_size * self.rectangle_spacing
         spacing = max(min_spacing, user_spacing)
         
         # Sample points along the path at regular intervals
@@ -1406,17 +1433,17 @@ class WorkspaceView(QGraphicsView):
         if len(path) < 2:
             return
         
-        # Calculate spacing between rectangles based on rectangle size
-        spacing = self.rectangle_size * self.rectangle_spacing
+        # Calculate spacing between rectangles based on rectangle size using edge-specific spacing
+        spacing = self.rectangle_size * self.edge_line_spacing
         
         # Calculate base side distance using edge-specific distance multiplier
         base_edge_distance = self.rectangle_size * self.edge_distance_multiplier
         
-        # First, create a resampled version of the path with consistent point spacing
-        resampled_path = self.resample_path_by_distance(path)
+        # First, create a resampled version of the path with consistent point spacing using edge-specific spacing
+        resampled_path = self.resample_path_by_distance(path, self.edge_line_spacing)
         
-        # Create center half rectangles along the main path
-        self.create_half_rectangles_along_path(resampled_path)
+        # Create center half rectangles along the main path using edge-specific spacing
+        self.create_half_rectangles_along_path(resampled_path, self.edge_line_spacing)
         
         # Create multiple side paths using edge-specific variables
         # Calculate cumulative distances to prevent overlaps
@@ -1514,12 +1541,12 @@ class WorkspaceView(QGraphicsView):
                     left_edge_path.append(left_edge_point)
                     right_edge_path.append(right_edge_point)
             
-            # Create rectangles along the edge paths using the same algorithm as main line
+            # Create rectangles along the edge paths using edge-specific spacing
             if left_edge_path:
-                self.create_rectangles_along_specific_path(left_edge_path)
+                self.create_rectangles_along_specific_path(left_edge_path, self.edge_line_spacing)
                 
             if right_edge_path:
-                self.create_rectangles_along_specific_path(right_edge_path)
+                self.create_rectangles_along_specific_path(right_edge_path, self.edge_line_spacing)
 
 class MainWindow(QMainWindow):
     def __init__(self):
