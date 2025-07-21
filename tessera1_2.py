@@ -6,9 +6,193 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene,
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
                            QGraphicsRectItem, QGraphicsPixmapItem, QLineEdit, QLabel,
                            QGraphicsLineItem, QGraphicsPathItem, QSlider, QGridLayout,
-                           QGraphicsPolygonItem)
-from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer
-from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor, QPolygonF
+                           QGraphicsPolygonItem, QFrame)
+from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
+from PyQt5.QtGui import QBrush, QPen, QColor, QPixmap, QPainter, QTransform, QPainterPath, QCursor, QPolygonF, QFontMetrics, QFont
+
+class ScaleBar(QWidget):
+    """Custom scale bar widget that shows pixel measurements"""
+    def __init__(self, orientation='horizontal', parent=None):
+        super().__init__(parent)
+        self.orientation = orientation  # 'horizontal' or 'vertical'
+        self.scale_factor = 1.0  # Current zoom scale factor
+        self.scene_rect = QRectF(0, 0, 1000, 1000)  # Scene dimensions
+        self.view_rect = QRectF(0, 0, 500, 500)  # Visible area
+        
+        # Setup appearance
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(palette.Window, QColor(240, 240, 240))
+        self.setPalette(palette)
+        
+        # Set size based on orientation
+        if orientation == 'horizontal':
+            self.setFixedHeight(30)
+            self.setMinimumWidth(100)
+        else:
+            self.setFixedWidth(30)
+            self.setMinimumHeight(100)
+    
+    def update_scale(self, scale_factor, scene_rect, view_rect):
+        """Update the scale bar based on current zoom and view"""
+        self.scale_factor = scale_factor
+        self.scene_rect = scene_rect
+        self.view_rect = view_rect
+        self.update()  # Trigger repaint
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Set font
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        
+        # Calculate tick spacing
+        if self.orientation == 'horizontal':
+            self._paint_horizontal_scale(painter)
+        else:
+            self._paint_vertical_scale(painter)
+    
+    def _paint_horizontal_scale(self, painter):
+        """Paint horizontal scale bar"""
+        width = self.width()
+        height = self.height()
+        
+        # Calculate pixel size in scene coordinates
+        pixels_per_scene_unit = 1.0 / self.scale_factor
+        
+        # Determine appropriate tick spacing (in pixels)
+        tick_spacings = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+        target_tick_width = 50  # Desired width between major ticks in pixels
+        
+        # Find best tick spacing
+        best_spacing = tick_spacings[0]
+        for spacing in tick_spacings:
+            scene_spacing = spacing * pixels_per_scene_unit
+            pixel_width = scene_spacing * self.scale_factor
+            if pixel_width >= target_tick_width:
+                best_spacing = spacing
+                break
+            best_spacing = spacing
+        
+        # Draw background
+        painter.fillRect(0, 0, width, height, QColor(240, 240, 240))
+        
+        # Draw border
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawLine(0, height-1, width, height-1)
+        
+        # Calculate visible range in scene coordinates
+        view_left = self.view_rect.left()
+        view_right = self.view_rect.right()
+        
+        # Calculate starting tick position
+        start_tick = int(view_left // best_spacing) * best_spacing
+        
+        # Draw ticks and labels
+        painter.setPen(QPen(QColor(50, 50, 50), 1))
+        
+        current_tick = start_tick
+        while current_tick <= view_right + best_spacing:
+            # Convert scene position to widget position
+            scene_pos = current_tick - view_left
+            widget_pos = (scene_pos / (view_right - view_left)) * width
+            
+            if 0 <= widget_pos <= width:
+                # Draw major tick
+                painter.drawLine(int(widget_pos), height-10, int(widget_pos), height-1)
+                
+                # Draw label
+                label = str(int(current_tick))
+                fm = QFontMetrics(painter.font())
+                label_width = fm.width(label)
+                label_x = int(widget_pos - label_width/2)
+                painter.drawText(label_x, 12, label)
+                
+                # Draw minor ticks
+                minor_spacing = best_spacing / 5
+                for i in range(1, 5):
+                    minor_pos = current_tick + i * minor_spacing
+                    if minor_pos <= view_right:
+                        minor_scene_pos = minor_pos - view_left
+                        minor_widget_pos = (minor_scene_pos / (view_right - view_left)) * width
+                        if 0 <= minor_widget_pos <= width:
+                            painter.drawLine(int(minor_widget_pos), height-5, int(minor_widget_pos), height-1)
+            
+            current_tick += best_spacing
+    
+    def _paint_vertical_scale(self, painter):
+        """Paint vertical scale bar"""
+        width = self.width()
+        height = self.height()
+        
+        # Calculate pixel size in scene coordinates
+        pixels_per_scene_unit = 1.0 / self.scale_factor
+        
+        # Determine appropriate tick spacing (in pixels)
+        tick_spacings = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+        target_tick_height = 50  # Desired height between major ticks in pixels
+        
+        # Find best tick spacing
+        best_spacing = tick_spacings[0]
+        for spacing in tick_spacings:
+            scene_spacing = spacing * pixels_per_scene_unit
+            pixel_height = scene_spacing * self.scale_factor
+            if pixel_height >= target_tick_height:
+                best_spacing = spacing
+                break
+            best_spacing = spacing
+        
+        # Draw background
+        painter.fillRect(0, 0, width, height, QColor(240, 240, 240))
+        
+        # Draw border
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawLine(width-1, 0, width-1, height)
+        
+        # Calculate visible range in scene coordinates
+        view_top = self.view_rect.top()
+        view_bottom = self.view_rect.bottom()
+        
+        # Calculate starting tick position
+        start_tick = int(view_top // best_spacing) * best_spacing
+        
+        # Draw ticks and labels
+        painter.setPen(QPen(QColor(50, 50, 50), 1))
+        
+        current_tick = start_tick
+        while current_tick <= view_bottom + best_spacing:
+            # Convert scene position to widget position
+            scene_pos = current_tick - view_top
+            widget_pos = (scene_pos / (view_bottom - view_top)) * height
+            
+            if 0 <= widget_pos <= height:
+                # Draw major tick
+                painter.drawLine(width-10, int(widget_pos), width-1, int(widget_pos))
+                
+                # Draw label (rotated for vertical)
+                painter.save()
+                painter.translate(8, int(widget_pos))
+                painter.rotate(-90)
+                label = str(int(current_tick))
+                fm = QFontMetrics(painter.font())
+                label_width = fm.width(label)
+                painter.drawText(-label_width//2, 0, label)
+                painter.restore()
+                
+                # Draw minor ticks
+                minor_spacing = best_spacing / 5
+                for i in range(1, 5):
+                    minor_pos = current_tick + i * minor_spacing
+                    if minor_pos <= view_bottom:
+                        minor_scene_pos = minor_pos - view_top
+                        minor_widget_pos = (minor_scene_pos / (view_bottom - view_top)) * height
+                        if 0 <= minor_widget_pos <= height:
+                            painter.drawLine(width-5, int(minor_widget_pos), width-1, int(minor_widget_pos))
+            
+            current_tick += best_spacing
 
 class ScalableRectangle(QGraphicsRectItem):
     # Class variable to track rectangle creation order
@@ -535,6 +719,24 @@ class WorkspaceView(QGraphicsView):
         
         # Track currently highlighted shape for visual feedback
         self.currently_highlighted_shape = None
+        
+        # Create scale bars
+        self.horizontal_scale_bar = ScaleBar('horizontal', self)
+        self.vertical_scale_bar = ScaleBar('vertical', self)
+        
+        # Position scale bars (they will be repositioned in resizeEvent)
+        self.horizontal_scale_bar.move(30, 0)
+        self.vertical_scale_bar.move(0, 30)
+        
+        # Set viewport margins to account for scale bars
+        self.setViewportMargins(30, 30, 0, 0)
+        
+        # Connect to view change events to update scale bars
+        self.horizontalScrollBar().valueChanged.connect(self.update_scale_bars)
+        self.verticalScrollBar().valueChanged.connect(self.update_scale_bars)
+        
+        # Also connect to scene rect changes
+        self.scene.sceneRectChanged.connect(self.update_scale_bars)
     
     def create_drawing_cursor(self):
         """Create a 3x3 black square cursor"""
@@ -696,6 +898,61 @@ class WorkspaceView(QGraphicsView):
         
         # Clear zoom flag after a short delay to allow all paint events to complete
         QTimer.singleShot(100, lambda: setattr(self.scene, 'is_zooming', False))
+        
+        # Update scale bars after zoom
+        QTimer.singleShot(50, self.update_scale_bars)
+    
+    def update_scale_bars(self):
+        """Update the scale bars based on current view state"""
+        if not hasattr(self, 'horizontal_scale_bar') or not hasattr(self, 'vertical_scale_bar'):
+            return
+            
+        # Get current transformation matrix
+        transform = self.transform()
+        scale_factor = transform.m11()  # Horizontal scale factor
+        
+        # Get visible scene rectangle
+        visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+        
+        # Update scale bars
+        self.horizontal_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+        self.vertical_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+    
+    def resizeEvent(self, event):
+        """Handle resize events to reposition scale bars"""
+        super().resizeEvent(event)
+        
+        if hasattr(self, 'horizontal_scale_bar') and hasattr(self, 'vertical_scale_bar'):
+            # Position horizontal scale bar at top, accounting for the full widget width
+            self.horizontal_scale_bar.setGeometry(30, 0, self.width() - 30, 30)
+            
+            # Position vertical scale bar at left, accounting for the full widget height
+            self.vertical_scale_bar.setGeometry(0, 30, 30, self.height() - 30)
+            
+            # Update scale bars
+            self.update_scale_bars()
+    
+    def showEvent(self, event):
+        """Handle show events to initialize scale bars"""
+        super().showEvent(event)
+        # Initial scale bar update
+        QTimer.singleShot(100, self.update_scale_bars)
+        
+        # Ensure scale bars are visible and on top
+        if hasattr(self, 'horizontal_scale_bar') and hasattr(self, 'vertical_scale_bar'):
+            self.horizontal_scale_bar.show()
+            self.vertical_scale_bar.show()
+            self.horizontal_scale_bar.raise_()
+            self.vertical_scale_bar.raise_()
+    
+    def paintEvent(self, event):
+        """Handle paint events and ensure scale bars stay on top"""
+        super().paintEvent(event)
+        
+        # Ensure scale bars are always on top
+        if hasattr(self, 'horizontal_scale_bar') and hasattr(self, 'vertical_scale_bar'):
+            self.horizontal_scale_bar.raise_()
+            self.vertical_scale_bar.raise_()
     
     def set_background_image(self, pixmap):
         # Remove existing background
@@ -708,10 +965,14 @@ class WorkspaceView(QGraphicsView):
         # Add the background at original size
         self.background_item = QGraphicsPixmapItem(pixmap)
         self.background_item.setZValue(-1)  # Put it behind everything
+        
+        # Explicitly position the background image at (0,0) to align with scale bars
+        self.background_item.setPos(0, 0)
+        
         self.scene.addItem(self.background_item)
         
-        # Update scene rect to fit the original image size
-        self.scene.setSceneRect(QRectF(pixmap.rect()))
+        # Update scene rect to start at (0,0) and match image dimensions
+        self.scene.setSceneRect(QRectF(0, 0, pixmap.width(), pixmap.height()))
     
     def set_solid_color_background(self, color):
         """Set a solid color background"""
@@ -735,10 +996,14 @@ class WorkspaceView(QGraphicsView):
         # Add the solid color background
         self.background_item = QGraphicsPixmapItem(solid_pixmap)
         self.background_item.setZValue(-1)  # Put it behind everything
+        
+        # Explicitly position the background at (0,0) to align with scale bars
+        self.background_item.setPos(0, 0)
+        
         self.scene.addItem(self.background_item)
         
-        # Update scene rect to fit the solid background
-        self.scene.setSceneRect(QRectF(solid_pixmap.rect()))
+        # Update scene rect to start at (0,0) and match background dimensions
+        self.scene.setSceneRect(QRectF(0, 0, width, height))
     
     def add_rectangle(self, x, y, width=100, height=100, color=None):
         rect = ScalableRectangle(x, y, width, height, color)
