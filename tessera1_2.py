@@ -1,6 +1,7 @@
 import sys
 import math
 import csv
+import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, 
                            QGraphicsView, QVBoxLayout, QWidget, QMenuBar, 
                            QMenu, QAction, QFileDialog, QHBoxLayout, QPushButton,
@@ -900,7 +901,8 @@ class WorkspaceView(QGraphicsView):
         self.translate(delta.x(), delta.y())
         
         # Clear zoom flag after a short delay to allow all paint events to complete
-        QTimer.singleShot(100, lambda: setattr(self.scene, 'is_zooming', False))
+        if hasattr(self, 'scene') and self.scene is not None:
+            QTimer.singleShot(100, lambda: setattr(self.scene, 'is_zooming', False))
         
         # Update scale bars after zoom
         QTimer.singleShot(50, self.update_scale_bars)
@@ -909,17 +911,25 @@ class WorkspaceView(QGraphicsView):
         """Update the scale bars based on current view state"""
         if not hasattr(self, 'horizontal_scale_bar') or not hasattr(self, 'vertical_scale_bar'):
             return
+        
+        # Check if scene is still valid
+        if not hasattr(self, 'scene') or self.scene is None:
+            return
             
-        # Get current transformation matrix
-        transform = self.transform()
-        scale_factor = transform.m11()  # Horizontal scale factor
-        
-        # Get visible scene rectangle
-        visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
-        
-        # Update scale bars
-        self.horizontal_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
-        self.vertical_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+        try:
+            # Get current transformation matrix
+            transform = self.transform()
+            scale_factor = transform.m11()  # Horizontal scale factor
+            
+            # Get visible scene rectangle
+            visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+            
+            # Update scale bars
+            self.horizontal_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+            self.vertical_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+        except RuntimeError:
+            # Scene has been deleted, skip update
+            return
     
     def resizeEvent(self, event):
         """Handle resize events to reposition scale bars"""
@@ -1140,6 +1150,8 @@ class WorkspaceView(QGraphicsView):
         
         return False
     
+
+    
     def remove_overlapping_rectangles_from_newest_batch(self, new_rectangles, rectangles_before):
         """Remove rectangles from the newest batch that overlap with existing shapes"""
         if not self.safe_mode or not self.parallel_mode or not new_rectangles:
@@ -1191,6 +1203,35 @@ class WorkspaceView(QGraphicsView):
             if shape.scene():  # Make sure it's still in the scene
                 self.scene.removeItem(shape)
     
+    def calculate_distance_between_rects(self, rect1, rect2):
+        """Calculate the minimum distance between two rectangles"""
+        # If rectangles overlap, distance is 0
+        if rect1.intersects(rect2):
+            return 0
+        
+        # Calculate distances between edges
+        left1, top1, right1, bottom1 = rect1.left(), rect1.top(), rect1.right(), rect1.bottom()
+        left2, top2, right2, bottom2 = rect2.left(), rect2.top(), rect2.right(), rect2.bottom()
+        
+        # Horizontal distance
+        if right1 < left2:
+            h_distance = left2 - right1
+        elif right2 < left1:
+            h_distance = left1 - right2
+        else:
+            h_distance = 0
+        
+        # Vertical distance
+        if bottom1 < top2:
+            v_distance = top2 - bottom1
+        elif bottom2 < top1:
+            v_distance = top1 - bottom2
+        else:
+            v_distance = 0
+        
+        # Return euclidean distance
+        return math.sqrt(h_distance * h_distance + v_distance * v_distance)
+    
     def highlight_shape(self, shape):
         """Highlight a new shape, clearing any previous highlight"""
         # Clear previous highlight
@@ -1206,10 +1247,14 @@ class WorkspaceView(QGraphicsView):
         # Get selected color
         color = self.main_window.selected_color if self.main_window else None
         
+        # Calculate center rectangle position
+        center_x = center_pos.x() - self.rectangle_size/2
+        center_y = center_pos.y() - self.rectangle_size/2
+        
         # Create central rectangle at 45 degrees
         center_rect = self.add_rectangle(
-            center_pos.x() - self.rectangle_size/2,
-            center_pos.y() - self.rectangle_size/2,
+            center_x,
+            center_y,
             self.rectangle_size,
             self.rectangle_size,
             color
@@ -1606,6 +1651,8 @@ class WorkspaceView(QGraphicsView):
                 self.setDragMode(QGraphicsView.RubberBandDrag)
                 self.setCursor(Qt.ArrowCursor)
     
+
+    
     def erase_rectangles_at_position(self, pos):
         """Erase any rectangles or triangles at the given position"""
         # Get the scene position
@@ -1624,6 +1671,8 @@ class WorkspaceView(QGraphicsView):
             self.scene.removeItem(shape)
         
         return shapes_to_remove
+    
+
     
 
     
@@ -2198,6 +2247,7 @@ class WorkspaceView(QGraphicsView):
                     # Create rectangle at this position
                     rect_x = x - self.rectangle_size/2
                     rect_y = y - self.rectangle_size/2
+                    
                     rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size, color)
                     
                     # Rotate the rectangle to match the smooth angle
@@ -2260,6 +2310,7 @@ class WorkspaceView(QGraphicsView):
                     half_height = self.rectangle_size / 2
                     rect_x = x - self.rectangle_size/2
                     rect_y = y - half_height/2
+                    
                     rect = self.add_rectangle(rect_x, rect_y, self.rectangle_size, half_height, color)
                     
                     # Check if fill mode is enabled for half rectangles
@@ -2987,57 +3038,6 @@ class MainWindow(QMainWindow):
             self.fill_half_rects_btn.setText("Black Half Mode: OFF")
             self.status_label.setText("Black half mode OFF - new half rectangles will be transparent")
     
-    def fill_half_rectangles_black(self):
-        """Fill all half rectangles (created in edge mode) with black color"""
-        half_rectangles = []
-        
-        # Find all half rectangles in the scene
-        for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                # Check if this is a half rectangle (height is half of width or width is half of height)
-                rect = item.rect()
-                width = rect.width()
-                height = rect.height()
-                
-                # Consider it a half rectangle if one dimension is roughly half the other
-                # Allow some tolerance for floating point precision
-                tolerance = 0.1
-                if (abs(width - height/2) < tolerance) or (abs(height - width/2) < tolerance):
-                    half_rectangles.append(item)
-        
-        # Fill all half rectangles with black color
-        black_color = QColor(0, 0, 0)  # Black color
-        for rect in half_rectangles:
-            rect.fill_color = black_color
-            rect.is_filled = True
-            rect.update()  # Trigger repaint
-        
-        self.status_label.setText(f"Filled {len(half_rectangles)} half rectangles with black")
-    
-    def unfill_half_rectangles(self):
-        """Remove fill from all half rectangles (make them transparent again)"""
-        half_rectangles = []
-        
-        # Find all half rectangles in the scene
-        for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                # Check if this is a half rectangle (height is half of width or width is half of height)
-                rect = item.rect()
-                width = rect.width()
-                height = rect.height()
-                
-                # Consider it a half rectangle if one dimension is roughly half the other
-                # Allow some tolerance for floating point precision
-                tolerance = 0.1
-                if (abs(width - height/2) < tolerance) or (abs(height - width/2) < tolerance):
-                    half_rectangles.append(item)
-        
-        # Make all half rectangles transparent again
-        for rect in half_rectangles:
-            rect.set_transparent()
-        
-        self.status_label.setText(f"Unfilled {len(half_rectangles)} half rectangles")
-    
     def clear_all(self):
         # Get all shapes before clearing
         shapes_to_clear = []
@@ -3209,6 +3209,10 @@ class MainWindow(QMainWindow):
             self.safe_btn.setText("Safe: ON")
         else:
             self.safe_btn.setText("Safe: OFF")
+    
+
+    
+
     
     def add_to_undo_stack(self, action_type, rectangles):
         """Add an action to the undo stack"""
@@ -3602,33 +3606,25 @@ class MainWindow(QMainWindow):
             self.half_rect_btn.setText("Half Rectangle: OFF")
     
     def create_color_palette(self, layout):
-        """Create a 16-color palette grid"""
-        # Define 16 colors arranged in a visually appealing way
-        colors = [
-            # Row 1: Reds and Pinks
-            "#FF0000",  # red
-            "#FFC0CB",  # pink
-            "#FFA500",  # orange
-            "#FFFF00",  # yellow
-            
-            # Row 2: Greens
-            "#008000",  # green
-            "#90EE90",  # light green
-            "#8B4513",  # brown
-            "#DEB887",  # light brown (burlywood)
-            
-            # Row 3: Blues and Purples
-            "#0000FF",  # blue
-            "#ADD8E6",  # light blue
-            "#800080",  # purple
-            "#F5F5DC",  # off white (beige)
-            
-            # Row 4: Neutrals
-            "#000000",  # black
-            "#808080",  # grey
-            "#D3D3D3",  # light grey
-            "#FFFFFF"   # white
-        ]
+        """Create a color palette grid from color_palette11.csv"""
+        # Load colors from CSV file
+        colors = []
+        try:
+            csv_path = os.path.join(os.path.dirname(__file__), "color_palette11.csv")
+            with open(csv_path, 'r') as file:
+                for line in file:
+                    color = line.strip()
+                    if color and color.startswith('#'):
+                        colors.append(color)
+        except Exception as e:
+            print(f"Error loading color palette: {e}")
+            # Fallback to default colors if CSV loading fails
+            colors = [
+                "#FF0000", "#FFC0CB", "#FFA500", "#FFFF00",
+                "#008000", "#90EE90", "#8B4513", "#DEB887",
+                "#0000FF", "#ADD8E6", "#800080", "#F5F5DC",
+                "#000000", "#808080", "#D3D3D3", "#FFFFFF"
+            ]
         
         # Create grid layout for colors
         palette_grid = QGridLayout()
@@ -3637,21 +3633,27 @@ class MainWindow(QMainWindow):
         palette_grid.setVerticalSpacing(0)
         palette_grid.setHorizontalSpacing(0)
         
-        # Create color buttons in 4x4 grid
+        # Determine grid dimensions based on number of colors
+        num_colors = len(colors)
+        cols = 5  # Use 5 columns for better layout
+        rows = (num_colors + cols - 1) // cols  # Calculate rows needed
+        
+        # Create color buttons
         for i, color_hex in enumerate(colors):
-            row = i // 4
-            col = i % 4
+            row = i // cols
+            col = i % cols
             
             color_btn = QPushButton()
-            color_btn.setFixedSize(25, 25)
+            color_btn.setFixedSize(20, 20)  # Slightly smaller to fit more colors
             color_btn.setStyleSheet(f"background-color: {color_hex}; border: none; margin: 0px; padding: 0px;")
             color_btn.clicked.connect(lambda checked, c=color_hex: self.select_color(c))
             
             palette_grid.addWidget(color_btn, row, col)
         
         # Set row and column stretches to 0 to prevent expansion
-        for i in range(4):
+        for i in range(rows):
             palette_grid.setRowStretch(i, 0)
+        for i in range(cols):
             palette_grid.setColumnStretch(i, 0)
         
         # Create widget to hold the grid
@@ -3659,7 +3661,8 @@ class MainWindow(QMainWindow):
         palette_widget.setLayout(palette_grid)
         palette_widget.setContentsMargins(0, 0, 0, 0)
         palette_widget.setStyleSheet("QWidget { margin: 0px; padding: 0px; }")
-        palette_widget.setFixedSize(100, 100)  # Fixed size: 4 columns × 25px = 100px, 4 rows × 25px = 100px
+        # Adjust size based on actual grid dimensions
+        palette_widget.setFixedSize(cols * 20, rows * 20)
         
         # Add the palette to the layout
         layout.addWidget(palette_widget)
