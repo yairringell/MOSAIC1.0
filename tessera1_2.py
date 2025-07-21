@@ -696,6 +696,9 @@ class WorkspaceView(QGraphicsView):
         # Edge mode variables
         self.edge_mode = False  # Edge mode for drawing central half rectangles with regular rectangles on sides
         
+        # Safe mode variables
+        self.safe_mode = False  # Safe mode to prevent overlapping shapes when drawing
+        
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
         
@@ -1120,6 +1123,74 @@ class WorkspaceView(QGraphicsView):
             self.set_shape_highlight(self.currently_highlighted_shape, False)
             self.currently_highlighted_shape = None
     
+    def check_position_overlap(self, x, y, width, height):
+        """Check if a position would overlap with existing shapes (for post-processing cleanup)"""
+        # Create a QRectF for the proposed rectangle
+        test_rect = QRectF(x, y, width, height)
+        
+        # Check against all existing shapes in the scene
+        for item in self.scene.items():
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                # Get the bounding rectangle of the existing shape
+                existing_rect = item.sceneBoundingRect()
+                
+                # Check if rectangles overlap
+                if test_rect.intersects(existing_rect):
+                    return True
+        
+        return False
+    
+    def remove_overlapping_rectangles_from_newest_batch(self, new_rectangles, rectangles_before):
+        """Remove rectangles from the newest batch that overlap with existing shapes"""
+        if not self.safe_mode or not self.parallel_mode or not new_rectangles:
+            return new_rectangles
+        
+        # Get all existing shapes (the ones that existed before this drawing operation)
+        existing_shapes = []
+        for item in self.scene.items():
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)) and item in rectangles_before:
+                existing_shapes.append(item)
+        
+        # Check each new rectangle for overlaps and remove if necessary
+        rectangles_to_remove = []
+        for new_rect in new_rectangles:
+            new_rect_bounds = new_rect.sceneBoundingRect()
+            
+            # Check if this new rectangle overlaps with any existing shape
+            for existing_shape in existing_shapes:
+                existing_bounds = existing_shape.sceneBoundingRect()
+                if new_rect_bounds.intersects(existing_bounds):
+                    rectangles_to_remove.append(new_rect)
+                    break  # No need to check other existing shapes for this rectangle
+        
+        # Remove the overlapping rectangles from the scene
+        for rect in rectangles_to_remove:
+            if rect.scene():  # Make sure it's still in the scene
+                self.scene.removeItem(rect)
+        
+        # Return the list of rectangles that were kept (not removed)
+        return [rect for rect in new_rectangles if rect not in rectangles_to_remove]
+    
+    def auto_delete_red_rectangles(self):
+        """Automatically delete all rectangles and triangles that are currently marked in red (newer shapes in overlaps)"""
+        # Get all rectangles and triangles in the scene
+        red_shapes = []
+        
+        for item in self.scene.items():
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                # Check if this shape would be painted red
+                overlap_info = item.check_for_overlaps_with_color()
+                if overlap_info:
+                    overlapping, is_newer = overlap_info
+                    if overlapping and is_newer:
+                        # This shape is newer (higher serial number) - it's displayed in red
+                        red_shapes.append(item)
+        
+        # Remove the red shapes without adding to undo stack (safe mode is automatic)
+        for shape in red_shapes:
+            if shape.scene():  # Make sure it's still in the scene
+                self.scene.removeItem(shape)
+    
     def highlight_shape(self, shape):
         """Highlight a new shape, clearing any previous highlight"""
         # Clear previous highlight
@@ -1295,6 +1366,12 @@ class WorkspaceView(QGraphicsView):
         elif event.key() == Qt.Key_D:
             # Toggle drawing mode
             self.set_drawing_mode(not self.drawing_mode)
+        elif event.key() == Qt.Key_H:
+            # Force disable half rectangle mode (emergency reset)
+            self.half_rectangle_mode = False
+            if self.main_window and hasattr(self.main_window, 'half_rect_btn'):
+                self.main_window.half_rect_btn.setChecked(False)
+                self.main_window.half_rect_btn.setText("Half Rectangle: OFF")
         else:
             super().keyPressEvent(event)
     
@@ -1653,7 +1730,7 @@ class WorkspaceView(QGraphicsView):
                 self.highlight_shape(shape_at_pos)
                 super().mousePressEvent(event)
         elif (self.drawing_mode or self.edge_mode or self.parallel_mode or self.half_rectangle_mode) and event.button() == Qt.LeftButton:
-            # Check if clicking on a rectangle or triangle - if so, don't start drawing
+            # In drawing modes, check if clicking on a shape - if so, do nothing
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
             shape_at_pos = None
@@ -1663,7 +1740,7 @@ class WorkspaceView(QGraphicsView):
                     break
             
             if shape_at_pos is None:
-                # No shape at position, clear highlight and start drawing
+                # No shape at position, start drawing
                 self.clear_current_highlight()
                 
                 # Start drawing a path
@@ -1677,10 +1754,7 @@ class WorkspaceView(QGraphicsView):
                 self.current_path_item = QGraphicsPathItem(path)
                 self.current_path_item.setPen(QPen(QColor(139, 69, 19), 2))
                 self.scene.addItem(self.current_path_item)
-            else:
-                # If clicking on shape, highlight it and pass event to parent for normal selection behavior
-                self.highlight_shape(shape_at_pos)
-                super().mousePressEvent(event)
+            # If clicking on shape, do nothing (don't select, don't draw)
         else:
             # General case: handle shape highlighting and selection
             scene_pos = self.mapToScene(event.pos())
@@ -1760,8 +1834,15 @@ class WorkspaceView(QGraphicsView):
             rectangles_after = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
             new_rectangles = [rect for rect in rectangles_after if rect not in rectangles_before]
             
+            # Apply safe mode cleanup if enabled (automatically delete red rectangles)
+            if self.safe_mode and self.parallel_mode and new_rectangles:
+                self.auto_delete_red_rectangles()
+            
             if new_rectangles and self.main_window:
                 self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
+            
+            # Clear any highlight to restore normal zoom functionality
+            self.clear_current_highlight()
             
             # Clear the path
             self.drawing_path = []
@@ -1903,6 +1984,9 @@ class WorkspaceView(QGraphicsView):
         if not hasattr(self, 'smoothed_path') or len(self.smoothed_path) < 2:
             return
         
+        # Enable batch operation mode for better performance
+        self.scene.batch_operation = True
+        
         # Use the configurable parallel distance multiplier from the text input
         base_parallel_distance = self.rectangle_size * self.parallel_distance_multiplier
         
@@ -1937,6 +2021,10 @@ class WorkspaceView(QGraphicsView):
             # Create parallel paths by offsetting each point of the resampled path
             left_path = []
             right_path = []
+            
+            # Check if we have enough points to create parallel paths
+            if len(resampled_path) < 2:
+                continue  # Skip this parallel line if not enough points
             
             # For each point in the resampled path, calculate the perpendicular offset
             for i in range(len(resampled_path)):
@@ -1999,6 +2087,9 @@ class WorkspaceView(QGraphicsView):
                 
             if right_path:
                 self.create_rectangles_along_specific_path(right_path)
+        
+        # Disable batch operation mode
+        self.scene.batch_operation = False
     
     def resample_path_by_distance(self, path, spacing_multiplier=None):
         """Resample a path to have consistent point spacing based on rectangle spacing"""
@@ -2351,6 +2442,13 @@ class MainWindow(QMainWindow):
         self.delete_green_btn.clicked.connect(self.delete_green_rectangles)
         toolbar_layout.addWidget(self.delete_green_btn)
         
+        # Add safe mode button
+        self.safe_btn = QPushButton("Safe: OFF")
+        self.safe_btn.setCheckable(True)
+        self.safe_btn.setChecked(False)
+        self.safe_btn.clicked.connect(self.toggle_safe_mode)
+        toolbar_layout.addWidget(self.safe_btn)
+        
         toolbar_layout.addStretch()
         main_layout.addLayout(toolbar_layout)
         
@@ -2522,11 +2620,13 @@ class MainWindow(QMainWindow):
                                 is_filled = True
                                 if hasattr(item, 'fill_color'):
                                     fill_color = item.fill_color.name()
+                                    print(f"Exporting filled rectangle at ({x}, {y}) with color {fill_color}")
                                 else:
                                     # Get from brush if available
                                     brush_color = item.brush().color()
                                     if brush_color.alpha() > 0:
                                         fill_color = brush_color.name()
+                                        print(f"Exporting filled rectangle at ({x}, {y}) with brush color {fill_color}")
                             
                             # Write row
                             writer.writerow([serial_number, rect_type, x, y, width, height, rotation, frame_color, fill_color, is_filled])
@@ -2562,11 +2662,13 @@ class MainWindow(QMainWindow):
                                 is_filled = True
                                 if hasattr(item, 'fill_color'):
                                     fill_color = item.fill_color.name()
+                                    print(f"Exporting filled triangle at ({x}, {y}) with color {fill_color}")
                                 else:
                                     # Get from brush if available
                                     brush_color = item.brush().color()
                                     if brush_color.alpha() > 0:
                                         fill_color = brush_color.name()
+                                        print(f"Exporting filled triangle at ({x}, {y}) with brush color {fill_color}")
                             
                             # Write row
                             writer.writerow([serial_number, rect_type, x, y, width, height, rotation, frame_color, fill_color, is_filled])
@@ -2584,6 +2686,9 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             try:
+                # Enable batch operation mode during import for better performance
+                self.workspace.scene.batch_operation = True
+                
                 rectangles_created = 0
                 with open(file_path, 'r', newline='', encoding='utf-8') as csvfile:
                     reader = csv.reader(csvfile)
@@ -2645,11 +2750,36 @@ class MainWindow(QMainWindow):
                                 shape.setRotation(rotation)
                             
                             # Set fill if specified
-                            if is_filled and fill_color:
-                                fill_qcolor = QColor(fill_color)
-                                shape.fill_color = fill_qcolor
-                                shape.is_filled = True
+                            if is_filled:
+                                print(f"Setting fill for shape at ({x}, {y}), is_filled={is_filled}, fill_color='{fill_color}'")
+                                if fill_color and fill_color != "":
+                                    # Use the fill color from CSV
+                                    fill_qcolor = QColor(fill_color)
+                                    if fill_qcolor.isValid():
+                                        shape.fill_color = fill_qcolor
+                                        shape.is_filled = True
+                                        print(f"Applied fill color {fill_color} to shape at ({x}, {y})")
+                                    else:
+                                        print(f"Invalid color {fill_color} for shape at ({x}, {y})")
+                                else:
+                                    # Shape was filled but with no specific color - use default black
+                                    shape.fill_color = QColor(0, 0, 0)  # Black
+                                    shape.is_filled = True
+                                    print(f"Applied default black fill to shape at ({x}, {y})")
+                                
+                                # Force a complete visual update - this is crucial
+                                shape.prepareGeometryChange()  # Notify Qt that the item appearance will change
                                 shape.update()  # Trigger repaint
+                                
+                                # Additional debugging - check if the fill was actually set
+                                print(f"After setting fill: shape.is_filled={shape.is_filled}, shape.fill_color={shape.fill_color.name() if hasattr(shape.fill_color, 'name') else shape.fill_color}")
+                                
+                                # Also invalidate the scene's item cache for this item
+                                if hasattr(shape.scene(), 'invalidate'):
+                                    shape.scene().invalidate(shape.sceneBoundingRect())
+                                # Force the view to refresh as well
+                                if hasattr(self, 'workspace') and hasattr(self.workspace, 'viewport'):
+                                    self.workspace.viewport().update()
                             
                             rectangles_created += 1
                             
@@ -2657,9 +2787,14 @@ class MainWindow(QMainWindow):
                             print(f"Warning: Error parsing row {row_num}: {e}, skipping")
                             continue
                 
+                # Disable batch operation mode after import
+                self.workspace.scene.batch_operation = False
+                
                 print(f"Successfully imported {rectangles_created} rectangles from: {file_path}")
                 
             except Exception as e:
+                # Make sure to disable batch mode even if there's an error
+                self.workspace.scene.batch_operation = False
                 print(f"Error importing CSV file: {e}")
     
     def add_rectangle(self):
@@ -3066,6 +3201,14 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} green rectangles")
         else:
             self.status_label.setText("Nothing to undo")
+    
+    def toggle_safe_mode(self):
+        """Toggle safe mode on/off"""
+        self.workspace.safe_mode = self.safe_btn.isChecked()
+        if self.safe_btn.isChecked():
+            self.safe_btn.setText("Safe: ON")
+        else:
+            self.safe_btn.setText("Safe: OFF")
     
     def add_to_undo_stack(self, action_type, rectangles):
         """Add an action to the undo stack"""
