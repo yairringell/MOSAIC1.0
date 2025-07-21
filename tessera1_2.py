@@ -527,6 +527,12 @@ class WorkspaceView(QGraphicsView):
         # Set initial cursor
         self.setCursor(Qt.ArrowCursor)
         
+        # Track current mouse position in scene coordinates
+        self.current_mouse_scene_pos = None
+        
+        # Track currently highlighted shape for visual feedback
+        self.currently_highlighted_shape = None
+    
     def create_drawing_cursor(self):
         """Create a 3x3 black square cursor"""
         # Create a 3x3 pixmap
@@ -678,6 +684,77 @@ class WorkspaceView(QGraphicsView):
         
         return triangle
     
+    def get_shape_placement_position(self, size):
+        """Get position for placing a shape, preferring cursor position but falling back to center if outside workspace"""
+        # If we have a current mouse position and it's inside the workspace bounds
+        if self.current_mouse_scene_pos is not None:
+            # Get the scene rect (workspace bounds)
+            scene_rect = self.scene.sceneRect()
+            
+            # Calculate shape bounds with cursor position as center
+            half_size = size / 2
+            shape_rect = QRectF(
+                self.current_mouse_scene_pos.x() - half_size,
+                self.current_mouse_scene_pos.y() - half_size,
+                size, size
+            )
+            
+            # Check if the shape would be completely within the workspace
+            if scene_rect.contains(shape_rect):
+                # Use cursor position (centered on cursor)
+                return self.current_mouse_scene_pos.x() - half_size, self.current_mouse_scene_pos.y() - half_size
+        
+        # Fallback to center of current view if cursor position is not available or outside workspace
+        center = self.mapToScene(self.rect().center())
+        return center.x() - size/2, center.y() - size/2
+    
+    def set_shape_highlight(self, shape, highlighted=True):
+        """Set or remove translucent pink highlight on a shape"""
+        if shape is None:
+            return
+            
+        if highlighted:
+            # Store original state if not already stored
+            if not hasattr(shape, '_original_fill_state'):
+                shape._original_fill_state = {
+                    'is_filled': shape.is_filled,
+                    'fill_color': shape.fill_color if hasattr(shape, 'fill_color') else None
+                }
+            
+            # Apply translucent pink highlight
+            shape.fill_color = QColor(255, 192, 203, 128)  # Pink with 50% transparency
+            shape.is_filled = True
+            shape.update()
+        else:
+            # Restore original state if it was stored
+            if hasattr(shape, '_original_fill_state'):
+                original_state = shape._original_fill_state
+                shape.is_filled = original_state['is_filled']
+                if original_state['fill_color'] is not None:
+                    shape.fill_color = original_state['fill_color']
+                elif not shape.is_filled:
+                    # If it wasn't filled originally, make it transparent
+                    shape.set_transparent()
+                shape.update()
+                # Clean up the stored state
+                delattr(shape, '_original_fill_state')
+    
+    def clear_current_highlight(self):
+        """Clear the current shape highlight"""
+        if self.currently_highlighted_shape is not None:
+            self.set_shape_highlight(self.currently_highlighted_shape, False)
+            self.currently_highlighted_shape = None
+    
+    def highlight_shape(self, shape):
+        """Highlight a new shape, clearing any previous highlight"""
+        # Clear previous highlight
+        self.clear_current_highlight()
+        
+        # Set new highlight
+        if shape is not None:
+            self.currently_highlighted_shape = shape
+            self.set_shape_highlight(shape, True)
+    
     def create_circle_of_rectangles(self, center_pos):
         """Create a circle of rectangles around a center position with a central rectangle at 45 degrees"""
         # Get selected color
@@ -767,20 +844,27 @@ class WorkspaceView(QGraphicsView):
     
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_T:
-            # Add rectangle at center of current view when 'T' is pressed
-            center = self.mapToScene(self.rect().center())
-            rect_x = center.x() - self.rectangle_size/2
-            rect_y = center.y() - self.rectangle_size/2
+            # Add rectangle at cursor position or center if cursor is outside workspace
             color = self.main_window.selected_color if self.main_window else None
             
             if self.half_rectangle_mode:
                 # Add half-width rectangle
-                half_width = self.rectangle_size / 2
-                rect_x = center.x() - half_width/2
-                self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size, color)
+                size = self.rectangle_size
+                half_width = size / 2
+                
+                # Use cursor position or center if outside workspace
+                center_x, center_y = self.get_shape_placement_position(size)
+                
+                # Adjust for half width (keep the same center point)
+                rect_x = center_x + (size - half_width) / 2
+                rect_y = center_y
+                
+                self.add_rectangle(rect_x, rect_y, half_width, size, color)
             else:
                 # Add full rectangle
-                self.add_rectangle(rect_x, rect_y, self.rectangle_size, self.rectangle_size, color)
+                size = self.rectangle_size
+                rect_x, rect_y = self.get_shape_placement_position(size)
+                self.add_rectangle(rect_x, rect_y, size, size, color)
         elif event.key() == Qt.Key_R:
             # Rotate selected rectangles counter-clockwise
             self.rotate_selected_rectangles(False)
@@ -807,21 +891,25 @@ class WorkspaceView(QGraphicsView):
             self.fill_selected_rectangles()
         elif event.key() == Qt.Key_P:
             # Add rectangle with regular height and half width when 'P' is pressed
-            center = self.mapToScene(self.rect().center())
-            half_width = self.rectangle_size / 2
-            rect_x = center.x() - half_width/2
-            rect_y = center.y() - self.rectangle_size/2
-            color = self.main_window.selected_color if self.main_window else None
+            size = self.rectangle_size
+            half_width = size / 2
             
-            self.add_rectangle(rect_x, rect_y, half_width, self.rectangle_size, color)
+            # Use cursor position or center if outside workspace
+            center_x, center_y = self.get_shape_placement_position(size)
+            
+            # Adjust for half width (keep the same center point)
+            rect_x = center_x + (size - half_width) / 2
+            rect_y = center_y
+            
+            color = self.main_window.selected_color if self.main_window else None
+            self.add_rectangle(rect_x, rect_y, half_width, size, color)
         elif event.key() == Qt.Key_O:
             # Add rectangle with half the size when 'O' is pressed
-            center = self.mapToScene(self.rect().center())
-            half_size = self.rectangle_size / 2
-            rect_x = center.x() - half_size/2
-            rect_y = center.y() - half_size/2
-            color = self.main_window.selected_color if self.main_window else None
+            size = self.rectangle_size
+            half_size = size / 2
+            rect_x, rect_y = self.get_shape_placement_position(half_size)
             
+            color = self.main_window.selected_color if self.main_window else None
             self.add_rectangle(rect_x, rect_y, half_size, half_size, color)
         elif event.key() == Qt.Key_D:
             # Toggle drawing mode
@@ -1083,6 +1171,9 @@ class WorkspaceView(QGraphicsView):
         selected_items = self.scene.selectedItems()
         for item in selected_items:
             if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                # Clear highlight if this shape was highlighted
+                if item == self.currently_highlighted_shape:
+                    self.clear_current_highlight()
                 self.scene.removeItem(item)
     
     def fill_selected_rectangles(self):
@@ -1109,8 +1200,12 @@ class WorkspaceView(QGraphicsView):
             items_at_pos = self.scene.items(scene_pos)
             
             # Find the first rectangle or triangle at this position and paint it
+            shape_found = False
             for item in items_at_pos:
                 if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                    # Highlight the clicked shape
+                    self.highlight_shape(item)
+                    
                     # Check if selected color is transparent
                     selected_color = self.main_window.selected_color if self.main_window else QColor(0, 0, 0)
                     if selected_color.alpha() == 0:  # Transparent color selected
@@ -1120,20 +1215,36 @@ class WorkspaceView(QGraphicsView):
                         item.fill_color = selected_color
                         item.is_filled = True
                         item.update()  # Trigger repaint
+                    shape_found = True
                     break  # Only paint the top-most shape
+            
+            # If no shape was found, clear current highlight
+            if not shape_found:
+                self.clear_current_highlight()
         elif self.erase_mode and event.button() == Qt.LeftButton:
             # Start erasing on left click
             self.is_erasing = True
             self.erased_rectangles = []  # Track erased rectangles for undo
             erased = self.erase_rectangles_at_position(event.pos())
             self.erased_rectangles.extend(erased)
+            
+            # Clear highlight if any of the erased shapes was highlighted
+            if self.currently_highlighted_shape in erased:
+                self.clear_current_highlight()
         elif self.circle_mode and event.button() == Qt.LeftButton:
             # Check if clicking on a rectangle or triangle - if so, don't create circle
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
-            shape_at_pos = any(isinstance(item, (ScalableRectangle, ScalableTriangle)) for item in items_at_pos)
+            shape_at_pos = None
+            for item in items_at_pos:
+                if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                    shape_at_pos = item
+                    break
             
-            if not shape_at_pos:
+            if shape_at_pos is None:
+                # No shape at position, clear highlight and create circle
+                self.clear_current_highlight()
+                
                 # Track rectangles before creating circle
                 rectangles_before = [item for item in self.scene.items() if isinstance(item, ScalableRectangle)]
                 
@@ -1147,15 +1258,23 @@ class WorkspaceView(QGraphicsView):
                 if new_rectangles and self.main_window:
                     self.main_window.add_to_undo_stack('add_rectangles', new_rectangles)
             else:
-                # If clicking on shape, pass event to parent for normal selection behavior
+                # If clicking on shape, highlight it and pass event to parent for normal selection behavior
+                self.highlight_shape(shape_at_pos)
                 super().mousePressEvent(event)
         elif (self.drawing_mode or self.edge_mode or self.parallel_mode or self.half_rectangle_mode) and event.button() == Qt.LeftButton:
             # Check if clicking on a rectangle or triangle - if so, don't start drawing
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
-            shape_at_pos = any(isinstance(item, (ScalableRectangle, ScalableTriangle)) for item in items_at_pos)
+            shape_at_pos = None
+            for item in items_at_pos:
+                if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                    shape_at_pos = item
+                    break
             
-            if not shape_at_pos:
+            if shape_at_pos is None:
+                # No shape at position, clear highlight and start drawing
+                self.clear_current_highlight()
+                
                 # Start drawing a path
                 self.is_drawing = True
                 self.drawing_path = []
@@ -1168,16 +1287,43 @@ class WorkspaceView(QGraphicsView):
                 self.current_path_item.setPen(QPen(QColor(139, 69, 19), 2))
                 self.scene.addItem(self.current_path_item)
             else:
-                # If clicking on shape, pass event to parent for normal selection behavior
+                # If clicking on shape, highlight it and pass event to parent for normal selection behavior
+                self.highlight_shape(shape_at_pos)
                 super().mousePressEvent(event)
         else:
+            # General case: handle shape highlighting and selection
+            scene_pos = self.mapToScene(event.pos())
+            items_at_pos = self.scene.items(scene_pos)
+            
+            # Find the first shape at this position
+            clicked_shape = None
+            for item in items_at_pos:
+                if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                    clicked_shape = item
+                    break
+            
+            if clicked_shape is not None:
+                # Highlight the clicked shape
+                self.highlight_shape(clicked_shape)
+            else:
+                # Clicked on empty area, clear any current highlight
+                self.clear_current_highlight()
+            
+            # Pass to parent for normal selection behavior
             super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
+        # Update current mouse position in scene coordinates
+        self.current_mouse_scene_pos = self.mapToScene(event.pos())
+        
         if self.erase_mode and self.is_erasing:
             # Continue erasing while dragging
             erased = self.erase_rectangles_at_position(event.pos())
             self.erased_rectangles.extend(erased)
+            
+            # Clear highlight if any of the erased shapes was highlighted
+            if self.currently_highlighted_shape in erased:
+                self.clear_current_highlight()
         elif (self.drawing_mode or self.edge_mode or self.parallel_mode or self.half_rectangle_mode) and self.is_drawing and self.current_path_item:
             # Continue drawing the path
             current_pos = self.mapToScene(event.pos())
@@ -2126,11 +2272,9 @@ class MainWindow(QMainWindow):
                 print(f"Error importing CSV file: {e}")
     
     def add_rectangle(self):
-        # Add rectangle at center of current view
-        center = self.workspace.mapToScene(self.workspace.rect().center())
+        # Add rectangle at cursor position, or center if cursor is outside workspace
         size = self.workspace.rectangle_size
-        rect_x = center.x() - size/2
-        rect_y = center.y() - size/2
+        rect_x, rect_y = self.workspace.get_shape_placement_position(size)
         
         self.workspace.add_rectangle(rect_x, rect_y, size, size, self.selected_color)
     
@@ -2269,30 +2413,33 @@ class MainWindow(QMainWindow):
     
     def add_half_width_rectangle(self):
         """Add rectangle with half width"""
-        center = self.workspace.mapToScene(self.workspace.rect().center())
-        half_width = self.workspace.rectangle_size / 2
-        rect_x = center.x() - half_width/2
-        rect_y = center.y() - self.workspace.rectangle_size/2
+        size = self.workspace.rectangle_size
+        half_width = size / 2
         
-        self.workspace.add_rectangle(rect_x, rect_y, half_width, self.workspace.rectangle_size, self.selected_color)
+        # Use cursor position or center if outside workspace
+        # For half-width rectangles, we use the full height but half width
+        center_x, center_y = self.workspace.get_shape_placement_position(size)
+        
+        # Adjust for half width (keep the same center point)
+        rect_x = center_x + (size - half_width) / 2
+        rect_y = center_y
+        
+        self.workspace.add_rectangle(rect_x, rect_y, half_width, size, self.selected_color)
         self.status_label.setText("Added half-width rectangle")
     
     def add_small_rectangle(self):
         """Add rectangle with half size"""
-        center = self.workspace.mapToScene(self.workspace.rect().center())
-        half_size = self.workspace.rectangle_size / 2
-        rect_x = center.x() - half_size/2
-        rect_y = center.y() - half_size/2
+        size = self.workspace.rectangle_size
+        half_size = size / 2
+        rect_x, rect_y = self.workspace.get_shape_placement_position(half_size)
         
         self.workspace.add_rectangle(rect_x, rect_y, half_size, half_size, self.selected_color)
         self.status_label.setText("Added small rectangle")
     
     def add_triangle(self):
         """Add 90-degree triangle with sides as rectangle size"""
-        center = self.workspace.mapToScene(self.workspace.rect().center())
         size = self.workspace.rectangle_size
-        triangle_x = center.x() - size/2
-        triangle_y = center.y() - size/2
+        triangle_x, triangle_y = self.workspace.get_shape_placement_position(size)
         
         self.workspace.add_triangle(triangle_x, triangle_y, size, self.selected_color)
         self.status_label.setText("Added triangle")
@@ -2363,15 +2510,15 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Unfilled {len(half_rectangles)} half rectangles")
     
     def clear_all(self):
-        # Get all rectangles before clearing
-        rectangles_to_clear = []
+        # Get all shapes before clearing
+        shapes_to_clear = []
         for item in self.workspace.scene.items():
-            if isinstance(item, ScalableRectangle):
-                rectangles_to_clear.append(item)
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                shapes_to_clear.append(item)
         
         # Add to undo stack before clearing
-        if rectangles_to_clear:
-            self.add_to_undo_stack('clear_all', rectangles_to_clear)
+        if shapes_to_clear:
+            self.add_to_undo_stack('clear_all', shapes_to_clear)
         
         # Clear all items except background
         for item in self.workspace.scene.items():
@@ -2404,6 +2551,9 @@ class MainWindow(QMainWindow):
             for shape in red_shapes:
                 self.workspace.scene.removeItem(shape)
             
+            # Refresh the visual state of remaining shapes
+            self.refresh_all_shapes_overlap_state()
+            
             self.status_label.setText(f"Deleted {len(red_shapes)} red shapes")
         else:
             self.status_label.setText("No red shapes found to delete")
@@ -2434,9 +2584,20 @@ class MainWindow(QMainWindow):
             for shape in green_shapes:
                 self.workspace.scene.removeItem(shape)
             
+            # Refresh the visual state of remaining shapes
+            self.refresh_all_shapes_overlap_state()
+            
             self.status_label.setText(f"Deleted {len(green_shapes)} green shapes")
         else:
             self.status_label.setText("No green shapes found to delete")
+    
+    def refresh_all_shapes_overlap_state(self):
+        """Refresh the visual overlap state of all remaining shapes after deletions"""
+        # Get all remaining shapes and force them to update their visual state
+        for item in self.workspace.scene.items():
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                # Force the shape to repaint and recalculate its overlap state
+                item.update()
     
     def toggle_color_mode(self):
         """Toggle between colored and transparent rectangles and triangles"""
