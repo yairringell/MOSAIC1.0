@@ -524,6 +524,9 @@ class WorkspaceView(QGraphicsView):
         # Create erase cursor for erase mode
         self.erase_cursor = self.create_erase_cursor()
         
+        # Create paint cursor for paint mode
+        self.paint_cursor = self.create_paint_cursor()
+        
         # Set initial cursor
         self.setCursor(Qt.ArrowCursor)
         
@@ -594,8 +597,81 @@ class WorkspaceView(QGraphicsView):
         # Create cursor with the frame pixmap, hotspot at center
         cursor = QCursor(pixmap, size//2, size//2)
         return cursor
+    
+    def create_paint_cursor(self):
+        """Create a colorful 4-pixel square cursor for paint mode"""
+        # Create a 4x4 pixmap for the paint cursor
+        size = 4
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)  # Transparent background
+        
+        # Create painter to draw the colorful square
+        painter = QPainter(pixmap)
+        
+        # Draw 4 different colored pixels in a 2x2 pattern
+        painter.setPen(QPen(QColor(255, 0, 0), 1))  # Red
+        painter.drawPoint(0, 0)
+        
+        painter.setPen(QPen(QColor(0, 255, 0), 1))  # Green
+        painter.drawPoint(1, 0)
+        
+        painter.setPen(QPen(QColor(0, 0, 255), 1))  # Blue
+        painter.drawPoint(0, 1)
+        
+        painter.setPen(QPen(QColor(255, 255, 0), 1))  # Yellow
+        painter.drawPoint(1, 1)
+        
+        # Fill the remaining pixels to make a full 4x4 colorful pattern
+        painter.setPen(QPen(QColor(255, 0, 255), 1))  # Magenta
+        painter.drawPoint(2, 0)
+        painter.drawPoint(3, 1)
+        
+        painter.setPen(QPen(QColor(0, 255, 255), 1))  # Cyan
+        painter.drawPoint(2, 1)
+        painter.drawPoint(1, 2)
+        
+        painter.setPen(QPen(QColor(255, 128, 0), 1))  # Orange
+        painter.drawPoint(0, 2)
+        painter.drawPoint(3, 0)
+        
+        painter.setPen(QPen(QColor(128, 0, 255), 1))  # Purple
+        painter.drawPoint(1, 3)
+        painter.drawPoint(3, 2)
+        
+        painter.setPen(QPen(QColor(255, 192, 203), 1))  # Pink
+        painter.drawPoint(0, 3)
+        painter.drawPoint(2, 2)
+        
+        painter.setPen(QPen(QColor(0, 128, 0), 1))  # Dark Green
+        painter.drawPoint(2, 3)
+        
+        painter.setPen(QPen(QColor(128, 128, 128), 1))  # Gray
+        painter.drawPoint(3, 3)
+        
+        painter.end()
+        
+        # Create cursor with the colorful pixmap, hotspot at center
+        cursor = QCursor(pixmap, size//2, size//2)
+        return cursor
         
     def wheelEvent(self, event):
+        # Check if we have a highlighted shape - if so, rotate it instead of zooming
+        if self.currently_highlighted_shape is not None:
+            # Rotate the highlighted shape instead of zooming
+            rotation_direction = 1 if event.angleDelta().y() > 0 else -1
+            rotation_increment = 2.0  # 2 degrees per wheel step
+            
+            # Calculate new rotation
+            current_rotation = getattr(self.currently_highlighted_shape, 'current_rotation', 0)
+            new_rotation = current_rotation + (rotation_increment * rotation_direction)
+            
+            # Apply the rotation
+            self.currently_highlighted_shape.current_rotation = new_rotation
+            self.currently_highlighted_shape.setRotation(new_rotation)
+            
+            return  # Don't zoom when rotating a shape
+        
+        # Normal zoom behavior when no shape is highlighted
         # Set zoom flag to prevent overlap checking during zoom
         self.scene.is_zooming = True
         
@@ -668,8 +744,23 @@ class WorkspaceView(QGraphicsView):
         rect = ScalableRectangle(x, y, width, height, color)
         self.scene.addItem(rect)
         
+        # Auto-select the newly created rectangle (only if not in batch operation)
+        batch_mode = hasattr(self.scene, 'batch_operation') and self.scene.batch_operation
+        if not batch_mode:
+            # Clear current selection and highlight first
+            self.scene.clearSelection()
+            self.clear_current_highlight()
+            
+            # Select the new rectangle using both systems
+            rect.setSelected(True)
+            self.highlight_shape(rect)
+            
+            # Force update to ensure selection is visible
+            rect.update()
+            self.scene.update()
+        
         # Track for undo if main window exists and not in batch operation
-        if self.main_window and not (hasattr(self.scene, 'batch_operation') and self.scene.batch_operation):
+        if self.main_window and not batch_mode:
             self.main_window.add_to_undo_stack('add_rectangles', [rect])
         
         return rect
@@ -678,8 +769,23 @@ class WorkspaceView(QGraphicsView):
         triangle = ScalableTriangle(x, y, size, color)
         self.scene.addItem(triangle)
         
+        # Auto-select the newly created triangle (only if not in batch operation)
+        batch_mode = hasattr(self.scene, 'batch_operation') and self.scene.batch_operation
+        if not batch_mode:
+            # Clear current selection and highlight first
+            self.scene.clearSelection()
+            self.clear_current_highlight()
+            
+            # Select the new triangle using both systems
+            triangle.setSelected(True)
+            self.highlight_shape(triangle)
+            
+            # Force update to ensure selection is visible
+            triangle.update()
+            self.scene.update()
+        
         # Track for undo if main window exists and not in batch operation
-        if self.main_window and not (hasattr(self.scene, 'batch_operation') and self.scene.batch_operation):
+        if self.main_window and not batch_mode:
             self.main_window.add_to_undo_stack('add_triangles', [triangle])
         
         return triangle
@@ -730,11 +836,15 @@ class WorkspaceView(QGraphicsView):
             if hasattr(shape, '_original_fill_state'):
                 original_state = shape._original_fill_state
                 shape.is_filled = original_state['is_filled']
+                
+                # Restore the original fill color if it exists
                 if original_state['fill_color'] is not None:
                     shape.fill_color = original_state['fill_color']
-                elif not shape.is_filled:
-                    # If it wasn't filled originally, make it transparent
+                
+                # If the shape wasn't originally filled and had no color, make it transparent
+                if not original_state['is_filled'] and original_state['fill_color'] is None:
                     shape.set_transparent()
+                    
                 shape.update()
                 # Clean up the stored state
                 delattr(shape, '_original_fill_state')
@@ -848,7 +958,7 @@ class WorkspaceView(QGraphicsView):
             color = self.main_window.selected_color if self.main_window else None
             
             if self.half_rectangle_mode:
-                # Add half-width rectangle
+                # Add half-width rectangle at 45 degrees
                 size = self.rectangle_size
                 half_width = size / 2
                 
@@ -859,7 +969,10 @@ class WorkspaceView(QGraphicsView):
                 rect_x = center_x + (size - half_width) / 2
                 rect_y = center_y
                 
-                self.add_rectangle(rect_x, rect_y, half_width, size, color)
+                rect = self.add_rectangle(rect_x, rect_y, half_width, size, color)
+                # Set rotation to 45 degrees
+                rect.current_rotation = 45
+                rect.setRotation(45)
             else:
                 # Add full rectangle
                 size = self.rectangle_size
@@ -890,7 +1003,7 @@ class WorkspaceView(QGraphicsView):
             # Fill selected rectangles with average color
             self.fill_selected_rectangles()
         elif event.key() == Qt.Key_P:
-            # Add rectangle with regular height and half width when 'P' is pressed
+            # Add rectangle with regular height and half width when 'P' is pressed at 45 degrees
             size = self.rectangle_size
             half_width = size / 2
             
@@ -902,7 +1015,10 @@ class WorkspaceView(QGraphicsView):
             rect_y = center_y
             
             color = self.main_window.selected_color if self.main_window else None
-            self.add_rectangle(rect_x, rect_y, half_width, size, color)
+            rect = self.add_rectangle(rect_x, rect_y, half_width, size, color)
+            # Set rotation to 45 degrees
+            rect.current_rotation = 45
+            rect.setRotation(45)
         elif event.key() == Qt.Key_O:
             # Add rectangle with half the size when 'O' is pressed
             size = self.rectangle_size
@@ -998,7 +1114,9 @@ class WorkspaceView(QGraphicsView):
         else:
             self.setDragMode(QGraphicsView.RubberBandDrag)
             # Reset to appropriate cursor based on current mode
-            if self.circle_mode:
+            if self.paint_mode:
+                self.setCursor(self.paint_cursor)
+            elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
             elif self.edge_mode:
                 self.setCursor(self.drawing_cursor)
@@ -1020,7 +1138,9 @@ class WorkspaceView(QGraphicsView):
             self.setCursor(self.drawing_cursor)
         else:
             # Reset to appropriate cursor and drag mode based on current mode
-            if self.erase_mode:
+            if self.paint_mode:
+                self.setCursor(self.paint_cursor)
+            elif self.erase_mode:
                 self.setCursor(self.erase_cursor)
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
@@ -1046,7 +1166,9 @@ class WorkspaceView(QGraphicsView):
             self.setCursor(self.circle_cursor)
         else:
             # Reset to appropriate cursor based on current mode
-            if self.drawing_mode:
+            if self.paint_mode:
+                self.setCursor(self.paint_cursor)
+            elif self.drawing_mode:
                 self.setCursor(self.drawing_cursor)
             else:
                 self.setCursor(Qt.ArrowCursor)
@@ -1064,7 +1186,9 @@ class WorkspaceView(QGraphicsView):
             self.setCursor(self.drawing_cursor)
         else:
             # Reset to appropriate cursor and drag mode based on current mode
-            if self.erase_mode:
+            if self.paint_mode:
+                self.setCursor(self.paint_cursor)
+            elif self.erase_mode:
                 self.setCursor(self.erase_cursor)
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
@@ -1084,7 +1208,9 @@ class WorkspaceView(QGraphicsView):
             self.setCursor(self.erase_cursor)
         else:
             # Reset to appropriate cursor based on current mode
-            if self.circle_mode:
+            if self.paint_mode:
+                self.setCursor(self.paint_cursor)
+            elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
             elif self.drawing_mode:
                 self.setCursor(self.drawing_cursor)
@@ -1097,8 +1223,8 @@ class WorkspaceView(QGraphicsView):
         
         # Update cursor based on paint mode
         if self.paint_mode:
-            # Use a custom paint cursor (we'll use the drawing cursor for now)
-            self.setCursor(self.drawing_cursor)
+            # Use the colorful paint cursor
+            self.setCursor(self.paint_cursor)
         else:
             # Reset to appropriate cursor based on current mode
             if self.erase_mode:
@@ -1126,7 +1252,9 @@ class WorkspaceView(QGraphicsView):
         # Edge mode uses the same cursor as drawing mode
         if not self.edge_mode:
             # Reset to appropriate cursor based on current mode
-            if self.erase_mode:
+            if self.paint_mode:
+                self.setCursor(self.paint_cursor)
+            elif self.erase_mode:
                 self.setCursor(self.erase_cursor)
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
@@ -1203,9 +1331,6 @@ class WorkspaceView(QGraphicsView):
             shape_found = False
             for item in items_at_pos:
                 if isinstance(item, (ScalableRectangle, ScalableTriangle)):
-                    # Highlight the clicked shape
-                    self.highlight_shape(item)
-                    
                     # Check if selected color is transparent
                     selected_color = self.main_window.selected_color if self.main_window else QColor(0, 0, 0)
                     if selected_color.alpha() == 0:  # Transparent color selected
@@ -1215,6 +1340,7 @@ class WorkspaceView(QGraphicsView):
                         item.fill_color = selected_color
                         item.is_filled = True
                         item.update()  # Trigger repaint
+                    
                     shape_found = True
                     break  # Only paint the top-most shape
             
@@ -2424,7 +2550,10 @@ class MainWindow(QMainWindow):
         rect_x = center_x + (size - half_width) / 2
         rect_y = center_y
         
-        self.workspace.add_rectangle(rect_x, rect_y, half_width, size, self.selected_color)
+        rect = self.workspace.add_rectangle(rect_x, rect_y, half_width, size, self.selected_color)
+        # Set rotation to 45 degrees
+        rect.current_rotation = 45
+        rect.setRotation(45)
         self.status_label.setText("Added half-width rectangle")
     
     def add_small_rectangle(self):
