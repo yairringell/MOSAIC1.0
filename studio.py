@@ -504,12 +504,14 @@ class ImageDesignStudio(QMainWindow):
             self.statusBar().showMessage("Error during palette color conversion")
     
     def load_palette_from_csv(self):
-        """Load color palette from color_palette11.csv file"""
+        """Load color palette from color_palette2.csv file"""
         try:
-            csv_path = os.path.join(os.path.dirname(__file__), "color_palette11.csv")
+            csv_path = os.path.join(os.path.dirname(__file__), "color_palette2.csv")
             colors = []
             
             with open(csv_path, 'r') as file:
+                # Skip header line
+                next(file)
                 for line in file:
                     color = line.strip()
                     if color and color.startswith('#'):
@@ -578,13 +580,17 @@ class ImageDesignStudio(QMainWindow):
     
     def reduce_colors_to_32_custom(self, pixmap):
         """Reduce the number of colors in an image to 32 using your specific palette"""
-        # Define your 32-color palette
-        palette_hex = [
-            "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#00FFFF", "#FF00FF",
-            "#C0C0C0", "#808080", "#800000", "#808000", "#008000", "#800080", "#008080", "#000080",
-            "#FFA500", "#A52A2A", "#FFC0CB", "#FFD700", "#ADD8E6", "#00008B", "#90EE90", "#006400",
-            "#D3D3D3", "#A9A9A9", "#FF7F50", "#FA8072", "#4B0082", "#EE82EE", "#40E0D0", "#F5F5DC"
-        ]
+        # Load custom color palette from CSV
+        palette_hex = self.load_palette_from_csv()
+        
+        # Fallback to default palette if CSV loading fails
+        if not palette_hex:
+            palette_hex = [
+                "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#00FFFF", "#FF00FF",
+                "#C0C0C0", "#808080", "#800000", "#808000", "#008000", "#800080", "#008080", "#000080",
+                "#FFA500", "#A52A2A", "#FFC0CB", "#FFD700", "#ADD8E6", "#00008B", "#90EE90", "#006400",
+                "#D3D3D3", "#A9A9A9", "#FF7F50", "#FA8072", "#4B0082", "#EE82EE", "#40E0D0", "#F5F5DC"
+            ]
         
         # Convert hex colors to RGB tuples
         palette_rgb = []
