@@ -3606,12 +3606,14 @@ class MainWindow(QMainWindow):
             self.half_rect_btn.setText("Half Rectangle: OFF")
     
     def create_color_palette(self, layout):
-        """Create a color palette grid from color_palette11.csv"""
+        """Create a color palette grid from color_palette2.csv"""
         # Load colors from CSV file
         colors = []
         try:
-            csv_path = os.path.join(os.path.dirname(__file__), "color_palette11.csv")
+            csv_path = os.path.join(os.path.dirname(__file__), "color_palette2.csv")
             with open(csv_path, 'r') as file:
+                # Skip header line
+                next(file)
                 for line in file:
                     color = line.strip()
                     if color and color.startswith('#'):
