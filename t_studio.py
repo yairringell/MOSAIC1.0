@@ -726,6 +726,9 @@ class WorkspaceView(QGraphicsView):
         self.circle_drawing_start_pos = None  # Starting position (center marker)
         self.preview_circle = None  # Preview circle during drag
         
+        # Mandala mode variables
+        self.mandala_mode = False  # Mandala mode for creating 6-fold symmetrical shapes
+        
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
         
@@ -1096,6 +1099,10 @@ class WorkspaceView(QGraphicsView):
         if self.main_window and not batch_mode:
             self.main_window.add_to_undo_stack('add_rectangles', [rect])
         
+        # Create mandala shapes if mandala mode is enabled and not in batch operation
+        if not batch_mode and self.mandala_mode and self.center_marker:
+            self.create_mandala_shapes(rect)
+        
         return rect
     
     def add_triangle(self, x, y, size, color=None):
@@ -1120,6 +1127,10 @@ class WorkspaceView(QGraphicsView):
         # Track for undo if main window exists and not in batch operation
         if self.main_window and not batch_mode:
             self.main_window.add_to_undo_stack('add_triangles', [triangle])
+        
+        # Create mandala shapes if mandala mode is enabled and not in batch operation
+        if not batch_mode and self.mandala_mode and self.center_marker:
+            self.create_mandala_shapes(triangle)
         
         return triangle
     
@@ -1571,6 +1582,104 @@ class WorkspaceView(QGraphicsView):
         if self.center_marker:
             self.scene.removeItem(self.center_marker)
             self.center_marker = None
+    
+    def clear_circles(self):
+        """Remove all drawn circles from the scene"""
+        circles_to_remove = []
+        
+        # Find all QGraphicsEllipseItem that are drawn circles (not center markers)
+        for item in self.scene.items():
+            if isinstance(item, QGraphicsEllipseItem) and not isinstance(item, CenterMarker):
+                circles_to_remove.append(item)
+        
+        # Remove the circles
+        for circle in circles_to_remove:
+            self.scene.removeItem(circle)
+        
+        return len(circles_to_remove)  # Return count for status message
+    
+    def set_mandala_mode(self, enabled):
+        """Enable or disable mandala mode"""
+        self.mandala_mode = enabled
+    
+    def create_mandala_shapes(self, original_shape):
+        """Create 5 additional shapes to complete a 6-fold mandala pattern around the center marker"""
+        if not self.center_marker or not self.mandala_mode:
+            return
+        
+        # Set batch operation mode to prevent recursive mandala creation
+        self.scene.batch_operation = True
+        
+        try:
+            # Get center marker position
+            center_marker_pos = self.center_marker.pos()
+            center_x = center_marker_pos.x()
+            center_y = center_marker_pos.y()
+            
+            # Get original shape scene bounds for accurate positioning
+            scene_bounds = original_shape.sceneBoundingRect()
+            shape_center_x = scene_bounds.x() + scene_bounds.width() / 2
+            shape_center_y = scene_bounds.y() + scene_bounds.height() / 2
+            width = scene_bounds.width()
+            height = scene_bounds.height()
+            
+            # Calculate distance from center to original shape
+            distance_from_center = math.sqrt(
+                (shape_center_x - center_x) ** 2 + 
+                (shape_center_y - center_y) ** 2
+            )
+            
+            # Calculate the angle of the original shape relative to the center
+            original_angle = math.atan2(shape_center_y - center_y, shape_center_x - center_x)
+            
+            print(f"=== MANDALA DEBUG ===")
+            print(f"Center marker at: ({center_x}, {center_y})")
+            print(f"Original shape center at: ({shape_center_x}, {shape_center_y})")
+            print(f"Distance from center: {distance_from_center}")
+            print(f"Original angle: {math.degrees(original_angle):.1f}°")
+            print(f"Creating 5 additional shapes to complete mandala...")
+            
+            # Get color and properties from original shape
+            color = original_shape.pen().color()
+            
+            # Create 5 additional shapes at 60-degree intervals from the original
+            for i in range(1, 6):  # Start from 1 since original is at position 0
+                angle = original_angle + math.radians(i * 60)  # 60 degrees apart
+                
+                # Calculate position for this mandala shape
+                mandala_center_x = center_x + distance_from_center * math.cos(angle)
+                mandala_center_y = center_y + distance_from_center * math.sin(angle)
+                
+                # Convert center position to top-left corner
+                new_x = mandala_center_x - width / 2
+                new_y = mandala_center_y - height / 2
+                
+                angle_degrees = math.degrees(angle) % 360
+                print(f"Shape {i+1} at angle {angle_degrees:.1f}°: center=({mandala_center_x:.1f}, {mandala_center_y:.1f}), top-left=({new_x:.1f}, {new_y:.1f})")
+                
+                # Create the new shape
+                if isinstance(original_shape, ScalableRectangle):
+                    new_shape = self.add_rectangle(new_x, new_y, width, height, color)
+                elif isinstance(original_shape, ScalableTriangle):
+                    new_shape = self.add_triangle(new_x, new_y, width, color)
+                
+                # Copy rotation if any
+                if hasattr(original_shape, 'current_rotation'):
+                    new_shape.current_rotation = original_shape.current_rotation
+                    new_shape.setRotation(original_shape.current_rotation)
+                
+                # Copy fill properties if any
+                if hasattr(original_shape, 'is_filled') and original_shape.is_filled:
+                    new_shape.is_filled = True
+                    if hasattr(original_shape, 'fill_color'):
+                        new_shape.fill_color = original_shape.fill_color
+                    new_shape.update()
+            
+            print(f"=== END DEBUG ===")
+                
+        finally:
+            # Always reset batch operation mode
+            self.scene.batch_operation = False
     
     def set_drawing_mode(self, enabled):
         """Enable or disable drawing mode (rectangle line)"""
@@ -3208,6 +3317,14 @@ class MainWindow(QMainWindow):
         self.workspace.fill_selected_rectangles()
         self.status_label.setText("Filled selected rectangles")
     
+    def clear_circles(self):
+        """Clear all drawn circles from the workspace"""
+        count = self.workspace.clear_circles()
+        if count > 0:
+            self.status_label.setText(f"Cleared {count} circles")
+        else:
+            self.status_label.setText("No circles to clear")
+    
     def toggle_fill_half_rectangles_mode(self):
         """Toggle the mode for filling newly drawn half rectangles with black color"""
         if self.fill_half_rects_btn.isChecked():
@@ -3446,6 +3563,13 @@ class MainWindow(QMainWindow):
         self.center_btn.clicked.connect(self.toggle_center_mode)
         left_layout.addWidget(self.center_btn)
         
+        # Add mandala mode button
+        self.mandala_btn = QPushButton("Mandala: OFF")
+        self.mandala_btn.setCheckable(True)
+        self.mandala_btn.setChecked(False)
+        self.mandala_btn.clicked.connect(self.toggle_mandala_mode)
+        left_layout.addWidget(self.mandala_btn)
+        
         # Add rectangle actions section
         actions_label = QLabel("Rectangle Actions")
         actions_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
@@ -3454,6 +3578,10 @@ class MainWindow(QMainWindow):
         fill_btn = QPushButton("Fill Selected (C)")
         fill_btn.clicked.connect(self.fill_selected_rectangles)
         left_layout.addWidget(fill_btn)
+        
+        clear_circles_btn = QPushButton("Clear Circles")
+        clear_circles_btn.clicked.connect(self.clear_circles)
+        left_layout.addWidget(clear_circles_btn)
         
         # Add status label
         self.status_label = QLabel("Ready")
@@ -3773,6 +3901,28 @@ class MainWindow(QMainWindow):
             self.center_btn.setText("Add Center")
             # Remove the center marker when mode is disabled
             self.workspace.remove_center_marker()
+            
+            # Also disable mandala mode when center is removed
+            if self.mandala_btn.isChecked():
+                self.mandala_btn.setChecked(False)
+                self.toggle_mandala_mode()
+    
+    def toggle_mandala_mode(self):
+        """Toggle mandala mode"""
+        # Only allow mandala mode if there's a center marker
+        if self.mandala_btn.isChecked() and not self.workspace.center_marker:
+            # No center marker - disable mandala mode and show message
+            self.mandala_btn.setChecked(False)
+            self.status_label.setText("Add a center marker first to use Mandala mode")
+            return
+        
+        self.workspace.set_mandala_mode(self.mandala_btn.isChecked())
+        if self.mandala_btn.isChecked():
+            self.mandala_btn.setText("Mandala: ON")
+            self.status_label.setText("Mandala mode ON - shapes will create 6-fold symmetry")
+        else:
+            self.mandala_btn.setText("Mandala: OFF")
+            self.status_label.setText("Mandala mode OFF")
     
     def toggle_half_rectangle_mode(self):
         """Toggle half rectangle mode"""
