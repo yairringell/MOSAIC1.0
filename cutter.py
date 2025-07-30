@@ -1,12 +1,24 @@
 import sys
 import csv
 import os
+import numpy as np
+try:
+    import cv2
+except ImportError:
+    print("Warning: OpenCV not installed. Blob detection will use fallback method.")
+    cv2 = None
+try:
+    import ezdxf
+except ImportError:
+    print("Warning: ezdxf not installed. DXF export will be disabled.")
+    ezdxf = None
+import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QFileDialog, QGraphicsView, 
                              QGraphicsScene, QGraphicsPixmapItem, QMenuBar, QAction,
                              QGraphicsRectItem, QGraphicsPolygonItem, QGraphicsTextItem)
 from PyQt5.QtCore import Qt, QRectF, QPointF, QSize
-from PyQt5.QtGui import QColor, QPen, QBrush, QPixmap, QPolygonF
+from PyQt5.QtGui import QColor, QPen, QBrush, QPixmap, QPolygonF, QPainterPath, QPainter
 
 class GridHandle(QGraphicsRectItem):
     """Draggable handle for moving the grid"""
@@ -492,6 +504,847 @@ class CutterView(QGraphicsView):
                         item.setBrush(QBrush(QColor(255, 255, 255)))  # Solid white
                         item.setPen(QPen(QColor(0, 0, 0), 0))  # Black frame
     
+    def draw_red_green_border(self):
+        """Detect all colored blobs and show their borders"""
+        try:
+            if cv2 is None:
+                print("OpenCV not available, blob detection disabled")
+                return
+            
+            # Get the scene bounds - focus on the grid area only
+            if not self.grid_visible:
+                print("Grid not visible, cannot detect colored areas")
+                return
+                
+            # Calculate the actual grid area
+            box_size = 250
+            grid_cols = 6
+            grid_rows = 6
+            
+            # Define the grid area bounds
+            grid_left = self.grid_offset_x
+            grid_top = self.grid_offset_y
+            grid_right = grid_left + (grid_cols * box_size)
+            grid_bottom = grid_top + (grid_rows * box_size)
+            
+            grid_rect = QRectF(grid_left, grid_top, grid_right - grid_left, grid_bottom - grid_top)
+            
+            print(f"Detecting colored blobs in grid area: {grid_rect}")
+            
+            # Create an image representation of the grid area only
+            scene_image = self.render_scene_to_image(grid_rect)
+            if scene_image is None:
+                print("Failed to render scene to image")
+                return
+            
+            h, w, ch = scene_image.shape
+            print(f"Rendered image size: {w}x{h}")
+            
+            # Create precise color detection based on the exact box colors used
+            # Convert QColor RGB values to BGR ranges for OpenCV (with small tolerance)
+            box_colors_rgb = [
+                (255, 0, 0),        # Red
+                (0, 255, 0),        # Green  
+                (0, 0, 255),        # Blue
+                (255, 255, 0),      # Yellow
+                (255, 0, 255),      # Magenta
+                (0, 255, 255),      # Cyan
+                (255, 128, 0),      # Orange
+                (128, 255, 0),      # Lime
+                (0, 255, 128),      # Spring Green
+                (0, 128, 255),      # Sky Blue
+                (128, 0, 255),      # Purple
+                (255, 0, 128),      # Pink
+                (192, 192, 192),    # Silver
+                (128, 128, 128),    # Gray
+                (128, 0, 0),        # Maroon
+                (0, 128, 0),        # Dark Green
+                (0, 0, 128),        # Navy
+                (128, 128, 0),      # Olive
+                (128, 0, 128),      # Purple Dark
+                (0, 128, 128),      # Teal
+                (255, 192, 203),    # Light Pink
+                (255, 165, 0),      # Orange Red
+                (255, 215, 0),      # Gold
+                (173, 216, 230),    # Light Blue
+                (144, 238, 144),    # Light Green
+                (221, 160, 221),    # Plum
+                (255, 182, 193),    # Light Pink 2
+                (255, 218, 185),    # Peach
+                (240, 230, 140),    # Khaki
+                (230, 230, 250),    # Lavender
+                (250, 128, 114),    # Salmon
+                (255, 160, 122),    # Light Salmon
+                (176, 196, 222),    # Light Steel Blue
+                (205, 92, 92),      # Indian Red
+                (255, 105, 180),    # Hot Pink
+                (64, 224, 208)      # Turquoise
+            ]
+            
+            # Create color detection with precise ranges for each box color
+            tolerance = 15  # Small tolerance for color matching
+            colors = {}
+            
+            for i, (r, g, b) in enumerate(box_colors_rgb):
+                # Convert RGB to BGR for OpenCV
+                bgr_color = (b, g, r)
+                color_name = f"color_{i:02d}"
+                
+                colors[color_name] = {
+                    'lower': np.array([max(0, bgr_color[0] - tolerance), 
+                                     max(0, bgr_color[1] - tolerance), 
+                                     max(0, bgr_color[2] - tolerance)]),
+                    'upper': np.array([min(255, bgr_color[0] + tolerance), 
+                                     min(255, bgr_color[1] + tolerance), 
+                                     min(255, bgr_color[2] + tolerance)]),
+                    'border_color': QColor(0, 0, 0)  # Black border
+                }
+            
+            borders_created = 0
+            
+            # Detect blobs for each specific color
+            for color_name, color_info in colors.items():
+                # Create mask for this specific color
+                mask = cv2.inRange(scene_image, color_info['lower'], color_info['upper'])
+                
+                # Clean up the mask
+                kernel = np.ones((3, 3), np.uint8)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+                
+                # Find contours for this color
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                # Draw borders for each blob of this color
+                for contour in contours:
+                    if cv2.contourArea(contour) < 100:  # Skip very small areas
+                        continue
+                    
+                    # Convert contour points to scene coordinates and create polygon
+                    polygon_points = []
+                    for point in contour:
+                        x, y = point[0]
+                        scene_x = grid_left + x
+                        scene_y = grid_top + y
+                        polygon_points.append(QPointF(scene_x, scene_y))
+                    
+                    if len(polygon_points) < 3:
+                        continue
+                    
+                    # Create polygon item for the blob border
+                    polygon = QPolygonF(polygon_points)
+                    polygon_item = QGraphicsPolygonItem(polygon)
+                    
+                    # Set border style - thin black border, no fill
+                    border_pen = QPen(color_info['border_color'], 1)  # 1 pixel thin black border
+                    border_pen.setCosmetic(True)
+                    polygon_item.setPen(border_pen)
+                    polygon_item.setBrush(QBrush(Qt.transparent))  # No fill
+                    polygon_item.setZValue(2)  # Put borders in front of everything
+                    
+                    # Add to scene and track as cut line
+                    self.scene.addItem(polygon_item)
+                    self.cut_lines.append(polygon_item)
+                    borders_created += 1
+                    
+                    # Find which grid box this blob belongs to
+                    blob_center_x = sum(pt.x() for pt in polygon_points) / len(polygon_points)
+                    blob_center_y = sum(pt.y() for pt in polygon_points) / len(polygon_points)
+                    
+                    # Calculate which box this blob is in
+                    box_col = int((blob_center_x - grid_left) // box_size)
+                    box_row = int((blob_center_y - grid_top) // box_size)
+                    
+                    # Make sure we're within the grid bounds
+                    if 0 <= box_col < grid_cols and 0 <= box_row < grid_rows:
+                        # Calculate the top-left corner of this box
+                        box_left = grid_left + (box_col * box_size)
+                        box_top = grid_top + (box_row * box_size)
+                        
+                        # Calculate circle positions relative to box top-left corner
+                        # Circle 1: half width, quarter height (top of triangle)
+                        circle1_x = box_left + (box_size / 2)
+                        circle1_y = box_top + (box_size / 4)
+                        
+                        # Circle 2: quarter width, three quarters height (bottom left)
+                        circle2_x = box_left + (box_size / 4)
+                        circle2_y = box_top + (3 * box_size / 4)
+                        
+                        # Circle 3: three quarters width, three quarters height (bottom right)
+                        circle3_x = box_left + (3 * box_size / 4)
+                        circle3_y = box_top + (3 * box_size / 4)
+                        
+                        # Create circles with radius 3 (half the original radius)
+                        circle_radius = 3
+                        
+                        # Circle 1 (top)
+                        circle1 = self.scene.addEllipse(
+                            circle1_x - circle_radius, circle1_y - circle_radius,
+                            circle_radius * 2, circle_radius * 2,
+                            QPen(QColor(0, 0, 0), 1),  # Black border
+                            QBrush(Qt.transparent)     # No fill
+                        )
+                        circle1.setZValue(3)  # In front of borders
+                        self.cut_lines.append(circle1)
+                        
+                        # Circle 2 (bottom left)
+                        circle2 = self.scene.addEllipse(
+                            circle2_x - circle_radius, circle2_y - circle_radius,
+                            circle_radius * 2, circle_radius * 2,
+                            QPen(QColor(0, 0, 0), 1),  # Black border
+                            QBrush(Qt.transparent)     # No fill
+                        )
+                        circle2.setZValue(3)  # In front of borders
+                        self.cut_lines.append(circle2)
+                        
+                        # Circle 3 (bottom right)
+                        circle3 = self.scene.addEllipse(
+                            circle3_x - circle_radius, circle3_y - circle_radius,
+                            circle_radius * 2, circle_radius * 2,
+                            QPen(QColor(0, 0, 0), 1),  # Black border
+                            QBrush(Qt.transparent)     # No fill
+                        )
+                        circle3.setZValue(3)  # In front of borders
+                        self.cut_lines.append(circle3)
+                        
+                        # Add line-drawn text label on screen for visual confirmation
+                        col_letter = chr(ord('A') + box_col)
+                        row_number = box_row + 1
+                        box_name = f"{col_letter}{row_number}"
+                        
+                        # Draw the box name using lines instead of text
+                        self.draw_line_text(box_name, circle1_x - 10, circle1_y - 35)
+                        
+                        # Create SVG file for this blob
+                        self.create_blob_svg(polygon_points, circle1_x, circle1_y, circle2_x, circle2_y, circle3_x, circle3_y,
+                                           circle_radius, box_row, box_col)
+                        
+                        # Create DXF file for this blob
+                        self.create_blob_dxf(polygon_points, circle1_x, circle1_y, circle2_x, circle2_y, circle3_x, circle3_y,
+                                           circle_radius, box_row, box_col)
+            
+            print(f"Created {borders_created} blob borders using precise color detection")
+            
+            # Draw thin black frames around all shapes
+            self.draw_shape_frames()
+                
+        except Exception as e:
+            print(f"Error in blob detection and border drawing: {e}")
+    
+    def create_blob_svg(self, polygon_points, circle1_x, circle1_y, circle2_x, circle2_y, circle3_x, circle3_y, circle_radius, box_row, box_col):
+        """Create an SVG file for a single blob with its border and three circles"""
+        try:
+            # Create blobs directory if it doesn't exist
+            blobs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blobs")
+            if not os.path.exists(blobs_dir):
+                os.makedirs(blobs_dir)
+            
+            # Calculate box name (A1, B2, etc.)
+            col_letter = chr(ord('A') + box_col)
+            row_number = box_row + 1
+            box_name = f"{col_letter}{row_number}"
+            
+            # Calculate bounding box of the polygon
+            min_x = min(pt.x() for pt in polygon_points)
+            max_x = max(pt.x() for pt in polygon_points)
+            min_y = min(pt.y() for pt in polygon_points)
+            max_y = max(pt.y() for pt in polygon_points)
+            
+            # Add some padding
+            padding = 10
+            svg_min_x = min_x - padding
+            svg_min_y = min_y - padding
+            svg_width = (max_x - min_x) + (2 * padding)
+            svg_height = (max_y - min_y) + (2 * padding)
+            
+            # Create SVG content
+            svg_content = f'''<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" 
+     width="{svg_width:.2f}" height="{svg_height:.2f}" 
+     viewBox="{svg_min_x:.2f} {svg_min_y:.2f} {svg_width:.2f} {svg_height:.2f}">
+  
+  <!-- Blob border -->
+  <polygon points="'''
+            
+            # Add polygon points
+            point_strings = []
+            for pt in polygon_points:
+                point_strings.append(f"{pt.x():.2f},{pt.y():.2f}")
+            svg_content += " ".join(point_strings)
+            
+            svg_content += f'''" 
+           fill="none" 
+           stroke="black" 
+           stroke-width="1"/>
+  
+  <!-- Circle 1 (top) -->
+  <circle cx="{circle1_x:.2f}" cy="{circle1_y:.2f}" r="{circle_radius}" 
+          fill="none" stroke="black" stroke-width="1"/>
+  
+  <!-- Circle 2 (bottom left) -->
+  <circle cx="{circle2_x:.2f}" cy="{circle2_y:.2f}" r="{circle_radius}" 
+          fill="none" stroke="black" stroke-width="1"/>
+  
+  <!-- Circle 3 (bottom right) -->
+  <circle cx="{circle3_x:.2f}" cy="{circle3_y:.2f}" r="{circle_radius}" 
+          fill="none" stroke="black" stroke-width="1"/>
+  
+  <!-- Box name label using lines -->'''
+            
+            # Add line-drawn text for the box name
+            text_x = circle1_x - 10
+            text_y = circle1_y - 25
+            
+            svg_content += self.get_svg_line_text(box_name, text_x, text_y)
+            
+            svg_content += '''
+        
+</svg>'''
+            
+            # Save SVG file
+            svg_filename = f"{box_name}_blob.svg"
+            svg_path = os.path.join(blobs_dir, svg_filename)
+            
+            with open(svg_path, 'w', encoding='utf-8') as svg_file:
+                svg_file.write(svg_content)
+            
+            print(f"Created SVG file: {svg_path}")
+            
+        except Exception as e:
+            print(f"Error creating SVG for box {box_col},{box_row}: {e}")
+    
+    def get_svg_line_text(self, text, start_x, start_y):
+        """Generate SVG line elements for text characters"""
+        try:
+            svg_lines = []
+            char_width = 8
+            char_height = 12
+            x_offset = 0
+            
+            for char in text:
+                char_x = start_x + x_offset
+                lines = self.get_character_lines(char, char_x, start_y, char_width, char_height)
+                
+                for line in lines:
+                    x1, y1, x2, y2 = line
+                    svg_lines.append(f'  <line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke="black" stroke-width="1"/>')
+                
+                x_offset += char_width + 2
+            
+            return '\n'.join(svg_lines)
+            
+        except Exception as e:
+            print(f"Error generating SVG line text: {e}")
+            return ""
+    
+    def get_character_lines(self, char, char_x, start_y, char_width, char_height):
+        """Get line definitions for a character"""
+        lines = []
+        
+        if char == 'A':
+            lines = [
+                (char_x, start_y + char_height, char_x, start_y + 2),
+                (char_x + char_width, start_y + char_height, char_x + char_width, start_y + 2),
+                (char_x, start_y + 2, char_x + char_width - 2, start_y + 2),  # Gap for laser cutting
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2)
+            ]
+        elif char == 'B':
+            lines = [
+                (char_x, start_y, char_x, start_y + char_height),
+                (char_x, start_y, char_x + char_width - 2, start_y),  # Gap for laser cutting
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                (char_x, start_y + char_height, char_x + char_width - 2, start_y + char_height),  # Gap for laser cutting
+                (char_x + char_width, start_y + 2, char_x + char_width, start_y + char_height//2),  # Gap for laser cutting
+                (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height - 2)  # Gap for laser cutting
+            ]
+        elif char == 'C':
+            lines = [
+                (char_x, start_y + 2, char_x, start_y + char_height - 2),
+                (char_x, start_y + 2, char_x + char_width, start_y + 2),
+                (char_x, start_y + char_height - 2, char_x + char_width, start_y + char_height - 2)
+            ]
+        elif char == 'D':
+            lines = [
+                # Left vertical line
+                (char_x, start_y, char_x, start_y + char_height),
+                # Top horizontal line (with gap for laser cutting)
+                (char_x, start_y, char_x + char_width - 2, start_y),
+                # Bottom horizontal line (with gap for laser cutting)
+                (char_x, start_y + char_height, char_x + char_width - 2, start_y + char_height),
+                # Right curve (approximated with lines, with gaps)
+                (char_x + char_width - 2, start_y, char_x + char_width, start_y + 2),
+                (char_x + char_width, start_y + 2, char_x + char_width, start_y + char_height - 2),
+                (char_x + char_width, start_y + char_height - 2, char_x + char_width - 2, start_y + char_height)
+            ]
+        elif char == '1':
+            lines = [
+                (char_x + char_width//2, start_y, char_x + char_width//2, start_y + char_height),
+                (char_x + char_width//4, start_y + 2, char_x + char_width//2, start_y),
+                (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+            ]
+        elif char == '2':
+            lines = [
+                (char_x, start_y, char_x + char_width, start_y),
+                (char_x + char_width, start_y, char_x + char_width, start_y + char_height//2),
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                (char_x, start_y + char_height//2, char_x, start_y + char_height),
+                (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+            ]
+        elif char == '3':
+            lines = [
+                (char_x, start_y, char_x + char_width, start_y),
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                (char_x, start_y + char_height, char_x + char_width, start_y + char_height),
+                (char_x + char_width, start_y, char_x + char_width, start_y + char_height)
+            ]
+        elif char == '4':
+            lines = [
+                (char_x, start_y, char_x, start_y + char_height//2),
+                (char_x + char_width, start_y, char_x + char_width, start_y + char_height),
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2)
+            ]
+        elif char == '5':
+            lines = [
+                (char_x, start_y, char_x + char_width, start_y),
+                (char_x, start_y, char_x, start_y + char_height//2),
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height),
+                (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+            ]
+        elif char == '6':
+            lines = [
+                (char_x, start_y, char_x, start_y + char_height),
+                (char_x, start_y, char_x + char_width, start_y),
+                (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                (char_x, start_y + char_height, char_x + char_width, start_y + char_height),
+                (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height)
+            ]
+        
+        return lines
+    
+    def create_blob_dxf(self, polygon_points, circle1_x, circle1_y, circle2_x, circle2_y, circle3_x, circle3_y, circle_radius, box_row, box_col):
+        """Create a DXF file for a single blob with its border and three circles"""
+        try:
+            if ezdxf is None:
+                print("ezdxf not available, skipping DXF creation")
+                return
+            
+            # Create blobs directory if it doesn't exist
+            blobs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blobs")
+            if not os.path.exists(blobs_dir):
+                os.makedirs(blobs_dir)
+            
+            # Calculate box name (A1, B2, etc.)
+            col_letter = chr(ord('A') + box_col)
+            row_number = box_row + 1
+            box_name = f"{col_letter}{row_number}"
+            
+            # Create a new DXF document
+            doc = ezdxf.new('R2010')  # DXF version R2010 (AutoCAD 2010)
+            msp = doc.modelspace()
+            
+            # Create layers for different elements
+            doc.layers.new('BLOB_BORDER', dxfattribs={'color': 1})  # Red
+            doc.layers.new('CIRCLES', dxfattribs={'color': 2})      # Yellow
+            doc.layers.new('TEXT', dxfattribs={'color': 3})         # Green
+            
+            # Add blob border as polyline
+            if len(polygon_points) >= 3:
+                # Convert QPointF to tuples for ezdxf
+                dxf_points = [(pt.x(), pt.y()) for pt in polygon_points]
+                
+                # Create closed polyline
+                polyline = msp.add_lwpolyline(dxf_points, close=True)
+                polyline.dxf.layer = 'BLOB_BORDER'
+            
+            # Add circles
+            circle1 = msp.add_circle((circle1_x, circle1_y), circle_radius)
+            circle1.dxf.layer = 'CIRCLES'
+            
+            circle2 = msp.add_circle((circle2_x, circle2_y), circle_radius)
+            circle2.dxf.layer = 'CIRCLES'
+            
+            circle3 = msp.add_circle((circle3_x, circle3_y), circle_radius)
+            circle3.dxf.layer = 'CIRCLES'
+            
+            # Add line-drawn text label instead of text entities
+            text_x = circle1_x - 10
+            text_y = circle1_y - 25
+            
+            # Draw the box name using lines
+            char_width = 8
+            char_height = 12
+            x_offset = 0
+            
+            for char in box_name:
+                char_x = text_x + x_offset
+                lines = self.get_character_lines(char, char_x, text_y, char_width, char_height)
+                
+                # Add each line to the DXF
+                for line in lines:
+                    x1, y1, x2, y2 = line
+                    line_entity = msp.add_line((x1, y1), (x2, y2))
+                    line_entity.dxf.layer = 'TEXT'
+                
+                x_offset += char_width + 2
+            
+            # Save DXF file
+            dxf_filename = f"{box_name}_blob.dxf"
+            dxf_path = os.path.join(blobs_dir, dxf_filename)
+            
+            doc.saveas(dxf_path)
+            print(f"Created DXF file: {dxf_path}")
+            
+        except Exception as e:
+            print(f"Error creating DXF for box {box_col},{box_row}: {e}")
+    
+    def draw_shape_frames(self):
+        """Draw thin black frames around all shapes for better visualization"""
+        try:
+            frames_created = 0
+            
+            # Find all shapes (rectangles and triangles) in the scene
+            for item in self.scene.items():
+                if (item != self.background_item and 
+                    item not in self.grid_items and 
+                    item not in self.grid_labels and
+                    item not in self.cut_lines and
+                    item != self.grid_handle and
+                    (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
+                    
+                    if isinstance(item, ScalableRectangle):
+                        # For rectangles, create a frame that matches exactly including rotation
+                        frame_rect = QGraphicsRectItem(item.rect())
+                        frame_rect.setPos(item.pos())
+                        frame_rect.setRotation(item.rotation())
+                        frame_rect.setTransformOriginPoint(item.transformOriginPoint())
+                        
+                        # Use cosmetic pen for constant thin line regardless of zoom
+                        pen = QPen(QColor(0, 0, 0), 0)  # Width 0 = cosmetic (always 1 pixel)
+                        pen.setCosmetic(True)
+                        frame_rect.setPen(pen)
+                        frame_rect.setBrush(QBrush(Qt.transparent))  # No fill
+                        frame_rect.setZValue(1.5)  # In front of shapes but behind blob borders
+                        
+                        self.scene.addItem(frame_rect)
+                        self.cut_lines.append(frame_rect)
+                        frames_created += 1
+                        
+                    elif isinstance(item, ScalableTriangle):
+                        # For triangles, create a frame that matches exactly including rotation
+                        frame_polygon = QGraphicsPolygonItem(item.polygon())
+                        frame_polygon.setPos(item.pos())
+                        frame_polygon.setRotation(item.rotation())
+                        frame_polygon.setTransformOriginPoint(item.transformOriginPoint())
+                        
+                        # Use cosmetic pen for constant thin line regardless of zoom
+                        pen = QPen(QColor(0, 0, 0), 0)  # Width 0 = cosmetic (always 1 pixel)
+                        pen.setCosmetic(True)
+                        frame_polygon.setPen(pen)
+                        frame_polygon.setBrush(QBrush(Qt.transparent))  # No fill
+                        frame_polygon.setZValue(1.5)  # In front of shapes but behind blob borders
+                        
+                        self.scene.addItem(frame_polygon)
+                        self.cut_lines.append(frame_polygon)
+                        frames_created += 1
+            
+            print(f"Created {frames_created} thin black frames around shapes")
+            
+        except Exception as e:
+            print(f"Error drawing shape frames: {e}")
+    
+    def draw_line_text(self, text, start_x, start_y):
+        """Draw text using line segments for better DXF compatibility"""
+        try:
+            char_width = 8
+            char_height = 12
+            line_width = 1
+            
+            x_offset = 0
+            
+            for char in text:
+                char_x = start_x + x_offset
+                
+                # Define line patterns for each character
+                lines = []
+                
+                if char == 'A':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y + char_height, char_x, start_y + 2),
+                        # Right vertical line  
+                        (char_x + char_width, start_y + char_height, char_x + char_width, start_y + 2),
+                        # Top horizontal line (with gap for laser cutting)
+                        (char_x, start_y + 2, char_x + char_width - 2, start_y + 2),
+                        # Middle horizontal line
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2)
+                    ]
+                elif char == 'B':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y, char_x, start_y + char_height),
+                        # Top horizontal line (with gap)
+                        (char_x, start_y, char_x + char_width - 2, start_y),
+                        # Middle horizontal line
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                        # Bottom horizontal line (with gap)
+                        (char_x, start_y + char_height, char_x + char_width - 2, start_y + char_height),
+                        # Top right vertical (with gap)
+                        (char_x + char_width, start_y + 2, char_x + char_width, start_y + char_height//2),
+                        # Bottom right vertical (with gap) 
+                        (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height - 2)
+                    ]
+                elif char == 'C':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y + 2, char_x, start_y + char_height - 2),
+                        # Top horizontal line
+                        (char_x, start_y + 2, char_x + char_width, start_y + 2),
+                        # Bottom horizontal line
+                        (char_x, start_y + char_height - 2, char_x + char_width, start_y + char_height - 2)
+                    ]
+                elif char == 'D':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y, char_x, start_y + char_height),
+                        # Top horizontal line (with gap)
+                        (char_x, start_y, char_x + char_width - 2, start_y),
+                        # Bottom horizontal line (with gap)
+                        (char_x, start_y + char_height, char_x + char_width - 2, start_y + char_height),
+                        # Right curve (approximated with lines, with gaps)
+                        (char_x + char_width - 2, start_y, char_x + char_width, start_y + 2),
+                        (char_x + char_width, start_y + 2, char_x + char_width, start_y + char_height - 2),
+                        (char_x + char_width, start_y + char_height - 2, char_x + char_width - 2, start_y + char_height)
+                    ]
+                elif char == 'E':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y, char_x, start_y + char_height),
+                        # Top horizontal line
+                        (char_x, start_y, char_x + char_width, start_y),
+                        # Middle horizontal line
+                        (char_x, start_y + char_height//2, char_x + char_width//2, start_y + char_height//2),
+                        # Bottom horizontal line
+                        (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+                    ]
+                elif char == 'F':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y, char_x, start_y + char_height),
+                        # Top horizontal line
+                        (char_x, start_y, char_x + char_width, start_y),
+                        # Middle horizontal line
+                        (char_x, start_y + char_height//2, char_x + char_width//2, start_y + char_height//2)
+                    ]
+                elif char == 'G':
+                    lines = [
+                        # Left vertical line
+                        (char_x, start_y + 2, char_x, start_y + char_height - 2),
+                        # Top horizontal line
+                        (char_x, start_y + 2, char_x + char_width, start_y + 2),
+                        # Bottom horizontal line
+                        (char_x, start_y + char_height - 2, char_x + char_width, start_y + char_height - 2),
+                        # Right vertical (bottom half)
+                        (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height - 2),
+                        # Middle horizontal (right half)
+                        (char_x + char_width//2, start_y + char_height//2, char_x + char_width, start_y + char_height//2)
+                    ]
+                elif char == '1':
+                    lines = [
+                        # Main vertical line
+                        (char_x + char_width//2, start_y, char_x + char_width//2, start_y + char_height),
+                        # Top diagonal
+                        (char_x + char_width//4, start_y + 2, char_x + char_width//2, start_y),
+                        # Bottom horizontal
+                        (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+                    ]
+                elif char == '2':
+                    lines = [
+                        # Top horizontal
+                        (char_x, start_y, char_x + char_width, start_y),
+                        # Top right vertical
+                        (char_x + char_width, start_y, char_x + char_width, start_y + char_height//2),
+                        # Middle horizontal
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                        # Bottom left vertical
+                        (char_x, start_y + char_height//2, char_x, start_y + char_height),
+                        # Bottom horizontal
+                        (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+                    ]
+                elif char == '3':
+                    lines = [
+                        # Top horizontal
+                        (char_x, start_y, char_x + char_width, start_y),
+                        # Middle horizontal
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                        # Bottom horizontal
+                        (char_x, start_y + char_height, char_x + char_width, start_y + char_height),
+                        # Right vertical
+                        (char_x + char_width, start_y, char_x + char_width, start_y + char_height)
+                    ]
+                elif char == '4':
+                    lines = [
+                        # Left vertical (top half)
+                        (char_x, start_y, char_x, start_y + char_height//2),
+                        # Right vertical (full)
+                        (char_x + char_width, start_y, char_x + char_width, start_y + char_height),
+                        # Middle horizontal
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2)
+                    ]
+                elif char == '5':
+                    lines = [
+                        # Top horizontal
+                        (char_x, start_y, char_x + char_width, start_y),
+                        # Left vertical (top half)
+                        (char_x, start_y, char_x, start_y + char_height//2),
+                        # Middle horizontal
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                        # Right vertical (bottom half)
+                        (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height),
+                        # Bottom horizontal
+                        (char_x, start_y + char_height, char_x + char_width, start_y + char_height)
+                    ]
+                elif char == '6':
+                    lines = [
+                        # Left vertical
+                        (char_x, start_y, char_x, start_y + char_height),
+                        # Top horizontal
+                        (char_x, start_y, char_x + char_width, start_y),
+                        # Middle horizontal
+                        (char_x, start_y + char_height//2, char_x + char_width, start_y + char_height//2),
+                        # Bottom horizontal
+                        (char_x, start_y + char_height, char_x + char_width, start_y + char_height),
+                        # Right vertical (bottom half)
+                        (char_x + char_width, start_y + char_height//2, char_x + char_width, start_y + char_height)
+                    ]
+                
+                # Draw all lines for this character
+                for line in lines:
+                    x1, y1, x2, y2 = line
+                    line_item = self.scene.addLine(x1, y1, x2, y2, QPen(QColor(0, 0, 0), line_width))
+                    line_item.setZValue(4)  # In front of everything
+                    self.cut_lines.append(line_item)
+                
+                # Move to next character position
+                x_offset += char_width + 2
+                
+        except Exception as e:
+            print(f"Error drawing line text: {e}")
+    
+    def merge_border_points(self, border_points):
+        """Merge border points into longer continuous lines"""
+        try:
+            if not border_points:
+                return []
+            
+            # Separate vertical and horizontal lines
+            vertical_lines = [(x1, y1, x2, y2) for x1, y1, x2, y2, line_type in border_points if line_type == 'vertical']
+            horizontal_lines = [(x1, y1, x2, y2) for x1, y1, x2, y2, line_type in border_points if line_type == 'horizontal']
+            
+            merged_lines = []
+            
+            # Merge vertical lines
+            for line in vertical_lines:
+                x1, y1, x2, y2 = line
+                merged = False
+                for i, merged_line in enumerate(merged_lines):
+                    mx1, my1, mx2, my2 = merged_line
+                    # Check if this line can extend an existing vertical line
+                    if (abs(mx1 - x1) < 2 and abs(mx2 - x2) < 2 and  # Same X position
+                        abs(my2 - y1) < 2):  # Adjacent Y position
+                        # Extend the existing line
+                        merged_lines[i] = (mx1, my1, mx2, y2)
+                        merged = True
+                        break
+                
+                if not merged:
+                    merged_lines.append(line)
+            
+            # Merge horizontal lines
+            for line in horizontal_lines:
+                x1, y1, x2, y2 = line
+                merged = False
+                for i, merged_line in enumerate(merged_lines):
+                    mx1, my1, mx2, my2 = merged_line
+                    # Check if this line can extend an existing horizontal line
+                    if (abs(my1 - y1) < 2 and abs(my2 - y2) < 2 and  # Same Y position
+                        abs(mx2 - x1) < 2):  # Adjacent X position
+                        # Extend the existing line
+                        merged_lines[i] = (mx1, my1, x2, my2)
+                        merged = True
+                        break
+                
+                if not merged:
+                    merged_lines.append(line)
+            
+            return merged_lines
+            
+        except Exception as e:
+            print(f"Error merging border points: {e}")
+            return [(x1, y1, x2, y2) for x1, y1, x2, y2, _ in border_points]
+    
+    def render_scene_to_image(self, scene_rect):
+        """Render the scene to a numpy array for OpenCV processing"""
+        try:
+            width = int(scene_rect.width())
+            height = int(scene_rect.height())
+            
+            # Create a QPixmap to render the scene
+            pixmap = QPixmap(width, height)
+            pixmap.fill(Qt.white)
+            
+            # Render the scene to the pixmap
+            painter = QPainter(pixmap)
+            self.scene.render(painter, QRectF(0, 0, width, height), scene_rect)
+            painter.end()
+            
+            # Convert QPixmap to QImage
+            qimage = pixmap.toImage()
+            qimage = qimage.convertToFormat(qimage.Format_RGB888)
+            
+            # Convert QImage to numpy array
+            width = qimage.width()
+            height = qimage.height()
+            ptr = qimage.constBits()
+            ptr.setsize(qimage.byteCount())
+            arr = np.array(ptr).reshape(height, width, 3)
+            
+            # Convert from RGB to BGR for OpenCV
+            arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+            
+            return arr
+            
+        except Exception as e:
+            print(f"Error rendering scene to image: {e}")
+            return None
+    
+    def get_pixel_color(self, x, y):
+        """Get the color at a specific pixel coordinate by checking which item is at that point"""
+        try:
+            # Create a small rectangle around the point for more accurate detection
+            search_rect = QRectF(x - 0.5, y - 0.5, 1, 1)
+            items_at_point = self.scene.items(search_rect)
+            
+            # Look for colored shapes first (highest priority)
+            for item in items_at_point:
+                if (isinstance(item, (ScalableRectangle, ScalableTriangle)) and
+                    item.brush().color() != Qt.transparent):
+                    return item.brush().color()
+            
+            # Then check colored rectangles from cut operation (background color)
+            for item in items_at_point:
+                if (isinstance(item, QGraphicsRectItem) and 
+                    item in self.cut_lines and
+                    item.brush().color() != Qt.transparent):
+                    return item.brush().color()
+            
+            # Return transparent if no colored item found
+            return QColor(Qt.transparent)
+            
+        except Exception as e:
+            print(f"Error getting pixel color at ({x}, {y}): {e}")
+            return QColor(Qt.transparent)
+    
     def clear_cut_lines(self):
         """Remove all cut lines and filled boxes, and reset shape colors"""
         for cut_item in self.cut_lines:
@@ -542,13 +1395,13 @@ class CutterWindow(QMainWindow):
         cut_btn.clicked.connect(self.perform_cut)
         toolbar_layout.addWidget(cut_btn)
         
+        svg_btn = QPushButton("Show Borders")
+        svg_btn.clicked.connect(self.export_svg)
+        toolbar_layout.addWidget(svg_btn)
+        
         save_boxes_btn = QPushButton("Save Boxes")
         save_boxes_btn.clicked.connect(self.save_a1_box)
         toolbar_layout.addWidget(save_boxes_btn)
-        
-        small_array_btn = QPushButton("Small Array")
-        small_array_btn.clicked.connect(self.create_small_array)
-        toolbar_layout.addWidget(small_array_btn)
         
         toolbar_layout.addStretch()
         layout.addLayout(toolbar_layout)
@@ -600,6 +1453,13 @@ class CutterWindow(QMainWindow):
     def perform_cut(self):
         """Perform cut operation - fill all boxes that contain shapes with different colors"""
         self.cutter_view.fill_A1_and_A2_boxes()
+        
+        # Automatically show borders after cutting
+        self.cutter_view.draw_red_green_border()
+    
+    def export_svg(self):
+        """Show borders of all colored blobs after cut operation"""
+        self.cutter_view.draw_red_green_border()
     
     def save_a1_box(self):
         """Save the A1 box area with 20-pixel margin as a high-quality image"""
@@ -676,228 +1536,6 @@ class CutterWindow(QMainWindow):
             
         except Exception as e:
             print(f"Error saving A1 box area: {e}")
-    
-    def create_small_array(self):
-        """Color all shape frames black and create arrays for all boxes that contain shapes, using each box's top-left corner as (0,0)"""
-        if not self.cutter_view.grid_visible:
-            print("Error: Grid must be visible to create small array")
-            return
-        
-        try:
-            # First, color all shape frames black
-            for item in self.cutter_view.scene.items():
-                if (item != self.cutter_view.background_item and 
-                    item not in self.cutter_view.grid_items and 
-                    item not in self.cutter_view.grid_labels and
-                    item not in self.cutter_view.cut_lines and
-                    item != self.cutter_view.grid_handle and
-                    (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
-                    # Set frame to black
-                    item.setPen(QPen(QColor(0, 0, 0), 1))  # Black frame with 1 pixel thickness
-            
-            box_size = 250
-            grid_cols = 6
-            grid_rows = 6
-            
-            # Define colors for each box (same as in fill_A1_and_A2_boxes)
-            box_colors = [
-                QColor(255, 0, 0),      # Red
-                QColor(0, 255, 0),      # Green  
-                QColor(0, 0, 255),      # Blue
-                QColor(255, 255, 0),    # Yellow
-                QColor(255, 0, 255),    # Magenta
-                QColor(0, 255, 255),    # Cyan
-                QColor(255, 128, 0),    # Orange
-                QColor(128, 255, 0),    # Lime
-                QColor(0, 255, 128),    # Spring Green
-                QColor(0, 128, 255),    # Sky Blue
-                QColor(128, 0, 255),    # Purple
-                QColor(255, 0, 128),    # Pink
-                QColor(192, 192, 192),  # Silver
-                QColor(128, 128, 128),  # Gray
-                QColor(128, 0, 0),      # Maroon
-                QColor(0, 128, 0),      # Dark Green
-                QColor(0, 0, 128),      # Navy
-                QColor(128, 128, 0),    # Olive
-                QColor(128, 0, 128),    # Purple Dark
-                QColor(0, 128, 128),    # Teal
-                QColor(255, 192, 203),  # Light Pink
-                QColor(255, 165, 0),    # Orange Red
-                QColor(255, 215, 0),    # Gold
-                QColor(173, 216, 230),  # Light Blue
-                QColor(144, 238, 144),  # Light Green
-                QColor(221, 160, 221),  # Plum
-                QColor(255, 182, 193),  # Light Pink
-                QColor(255, 218, 185),  # Peach
-                QColor(240, 230, 140),  # Khaki
-                QColor(230, 230, 250),  # Lavender
-                QColor(250, 128, 114),  # Salmon
-                QColor(255, 160, 122),  # Light Salmon
-                QColor(176, 196, 222),  # Light Steel Blue
-                QColor(205, 92, 92),    # Indian Red
-                QColor(255, 105, 180),  # Hot Pink
-                QColor(64, 224, 208)    # Turquoise
-            ]
-            
-            # Dictionary to store shapes for each box
-            box_shapes = {}
-            
-            # Process all grid boxes
-            for row in range(grid_rows):
-                for col in range(grid_cols):
-                    # Calculate box position
-                    box_x = self.cutter_view.grid_offset_x + (col * box_size)
-                    box_y = self.cutter_view.grid_offset_y + (row * box_size)
-                    box_rect = QRectF(box_x, box_y, box_size, box_size)
-                    
-                    # Calculate box index and color
-                    box_index = row * grid_cols + col
-                    box_color = box_colors[box_index % len(box_colors)]
-                    
-                    # Box name (A1, B1, C1, A2, B2, etc.)
-                    box_name = chr(ord('A') + col) + str(row + 1)
-                    
-                    # Find shapes in this box
-                    shapes_in_box = []
-                    
-                    for item in self.cutter_view.scene.items():
-                        if (item != self.cutter_view.background_item and 
-                            item not in self.cutter_view.grid_items and 
-                            item not in self.cutter_view.grid_labels and
-                            item not in self.cutter_view.cut_lines and
-                            item != self.cutter_view.grid_handle and
-                            (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
-                            
-                            shape_rect = item.sceneBoundingRect()
-                            shape_brush = item.brush()
-                            
-                            # Check if shape overlaps with this box and has the box's color
-                            if box_rect.intersects(shape_rect) and shape_brush.color() == box_color:
-                                # Calculate relative position from this box's top-left corner
-                                relative_x = item.pos().x() - box_x
-                                relative_y = item.pos().y() - box_y
-                                
-                                if isinstance(item, ScalableRectangle):
-                                    shape_data = {
-                                        'type': 'Rectangle',
-                                        'x': relative_x,
-                                        'y': relative_y,
-                                        'width': item.rect().width(),
-                                        'height': item.rect().height(),
-                                        'rotation': item.rotation(),
-                                        'serial_number': getattr(item, 'serial_number', 0),
-                                        'fill_color': f"#{box_color.red():02X}{box_color.green():02X}{box_color.blue():02X}"
-                                    }
-                                else:  # ScalableTriangle
-                                    shape_data = {
-                                        'type': 'Triangle',
-                                        'x': relative_x,
-                                        'y': relative_y,
-                                        'size': getattr(item, 'size', 50),
-                                        'rotation': item.rotation(),
-                                        'serial_number': getattr(item, 'serial_number', 0),
-                                        'fill_color': f"#{box_color.red():02X}{box_color.green():02X}{box_color.blue():02X}"
-                                    }
-                                shapes_in_box.append(shape_data)
-                    
-                    # Store shapes if any found
-                    if shapes_in_box:
-                        box_shapes[box_name] = {
-                            'shapes': shapes_in_box,
-                            'color': f"#{box_color.red():02X}{box_color.green():02X}{box_color.blue():02X}",
-                            'box_index': box_index
-                        }
-            
-            # Create box_array folder and save all box arrays
-            if box_shapes:
-                # Get save directory
-                save_dir = QFileDialog.getExistingDirectory(
-                    self, "Select Directory to Save Box Arrays"
-                )
-                
-                if save_dir:
-                    # Create box_array folder
-                    box_array_folder = os.path.join(save_dir, "box_array")
-                    os.makedirs(box_array_folder, exist_ok=True)
-                    
-                    def save_box_array(box_name, box_data):
-                        """Helper function to save a box array"""
-                        shapes = box_data['shapes']
-                        fill_color_hex = box_data['color']
-                        
-                        if not shapes:
-                            return 0
-                        
-                        file_path = os.path.join(box_array_folder, f"{box_name}_array.csv")
-                        
-                        with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-                            writer = csv.writer(csvfile)
-                            
-                            # Write header
-                            writer.writerow([
-                                'Serial Number', 'Shape Type', 'X', 'Y', 'Width', 'Height', 
-                                'Rotation', 'Frame Color', 'Fill Color', 'Is Filled'
-                            ])
-                            
-                            # Write shape data
-                            for shape in shapes:
-                                if shape['type'] == 'Rectangle':
-                                    writer.writerow([
-                                        shape['serial_number'],
-                                        'Rectangle',
-                                        shape['x'],
-                                        shape['y'],
-                                        shape['width'],
-                                        shape['height'],
-                                        shape['rotation'],
-                                        '#000000',  # Black frame
-                                        fill_color_hex,
-                                        'True'
-                                    ])
-                                else:  # Triangle
-                                    writer.writerow([
-                                        shape['serial_number'],
-                                        'Triangle',
-                                        shape['x'],
-                                        shape['y'],
-                                        shape['size'],
-                                        shape['size'],  # Height same as width for triangles
-                                        shape['rotation'],
-                                        '#000000',  # Black frame
-                                        fill_color_hex,
-                                        'True'
-                                    ])
-                        
-                        return len(shapes)
-                    
-                    # Save arrays for all boxes with shapes
-                    total_boxes = 0
-                    total_shapes = 0
-                    
-                    for box_name in sorted(box_shapes.keys()):
-                        box_data = box_shapes[box_name]
-                        shape_count = save_box_array(box_name, box_data)
-                        total_boxes += 1
-                        total_shapes += shape_count
-                        
-                        # Print individual box info
-                        rectangles = sum(1 for s in box_data['shapes'] if s['type'] == 'Rectangle')
-                        triangles = sum(1 for s in box_data['shapes'] if s['type'] == 'Triangle')
-                        print(f"{box_name}: {shape_count} shapes ({rectangles} rectangles, {triangles} triangles)")
-                    
-                    print(f"\nBox arrays saved successfully to: {box_array_folder}")
-                    print(f"Total: {total_boxes} boxes processed with {total_shapes} shapes")
-                    print("Each array uses its box's top-left corner as (0,0)")
-                    
-                    if total_shapes == 0:
-                        print("No shapes found in any boxes with their respective colors")
-                        print("Make sure to run 'Cut' first to color the shapes")
-            else:
-                print("No shapes found in any boxes with their respective colors")
-                print("Make sure to run 'Cut' first to color the shapes")
-            
-        except Exception as e:
-            print(f"Error creating small array: {e}")
     
     def toggle_grid(self):
         """Toggle the 250x250 grid on/off"""
