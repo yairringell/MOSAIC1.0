@@ -1564,80 +1564,137 @@ class CutterWindow(QMainWindow):
         print(f"Restored original colors to {shapes_restored} shapes")
 
     def save_a1_box(self):
-        """Save the A1 box area with 20-pixel margin as a high-quality image"""
+        """Save PNG files for all boxes that contain shapes with 10-pixel margin"""
         if not self.cutter_view.grid_visible:
-            print("Error: Grid must be visible to save A1 box")
+            print("Error: Grid must be visible to save boxes")
             return
         
         try:
-            # A1 box parameters (top-left box: row=0, col=0)
+            # Create blobs directory if it doesn't exist
+            blobs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blobs")
+            if not os.path.exists(blobs_dir):
+                os.makedirs(blobs_dir)
+            
+            # Grid parameters
             box_size = 250
-            margin = 20
+            margin = 20  # 20 pixel margin
+            grid_cols = 6
+            grid_rows = 6
             
-            # Calculate A1 box position
-            a1_x = self.cutter_view.grid_offset_x
-            a1_y = self.cutter_view.grid_offset_y
+            boxes_saved = 0
             
-            # Define the capture area with margin
-            capture_x = a1_x - margin
-            capture_y = a1_y - margin
-            capture_width = box_size + (2 * margin)
-            capture_height = box_size + (2 * margin)
+            # Check each box for shapes
+            for row in range(grid_rows):
+                for col in range(grid_cols):
+                    # Calculate box position
+                    box_x = self.cutter_view.grid_offset_x + (col * box_size)
+                    box_y = self.cutter_view.grid_offset_y + (row * box_size)
+                    box_rect = QRectF(box_x, box_y, box_size, box_size)
+                    
+                    # Check if this box contains any shapes
+                    has_shapes = False
+                    for item in self.cutter_view.scene.items():
+                        if (item != self.cutter_view.background_item and 
+                            item not in self.cutter_view.grid_items and 
+                            item not in self.cutter_view.grid_labels and
+                            item not in self.cutter_view.cut_lines and
+                            item != self.cutter_view.grid_handle and
+                            (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
+                            
+                            # Check if shape overlaps with this box
+                            shape_rect = item.sceneBoundingRect()
+                            if box_rect.intersects(shape_rect):
+                                has_shapes = True
+                                break
+                    
+                    # If box contains shapes, save PNG
+                    if has_shapes:
+                        # Calculate box name (A1, B2, etc.)
+                        col_letter = chr(ord('A') + col)
+                        row_number = row + 1
+                        box_name = f"{col_letter}{row_number}"
+                        
+                        # Define the capture area with margin
+                        capture_x = box_x - margin
+                        capture_y = box_y - margin
+                        capture_width = box_size + (2 * margin)
+                        capture_height = box_size + (2 * margin)
+                        
+                        # Temporarily hide only the extra shape frame items created by draw_shape_frames()
+                        # but keep the border lines created by draw_red_green_border()
+                        hidden_frames = []
+                        for cut_item in self.cutter_view.cut_lines:
+                            # Check if this is a shape frame item (created by draw_shape_frames)
+                            # These have z-value of 1.5 and are rectangles/polygons matching shape bounds
+                            if (isinstance(cut_item, (QGraphicsRectItem, QGraphicsPolygonItem)) and
+                                cut_item.pen().color() == QColor(0, 0, 0) and
+                                cut_item.brush().color() == Qt.transparent and
+                                hasattr(cut_item, 'zValue') and cut_item.zValue() == 1.5):
+                                cut_item.setVisible(False)
+                                hidden_frames.append(cut_item)
+                        
+                        # Also temporarily make shape frames transparent to match on-screen appearance
+                        original_shape_pens = []
+                        for item in self.cutter_view.scene.items():
+                            if (isinstance(item, (ScalableRectangle, ScalableTriangle)) and
+                                item != self.cutter_view.background_item and 
+                                item not in self.cutter_view.grid_items and 
+                                item not in self.cutter_view.grid_labels and
+                                item not in self.cutter_view.cut_lines and
+                                item != self.cutter_view.grid_handle):
+                                # Store original pen and set transparent pen
+                                original_shape_pens.append((item, item.pen()))
+                                transparent_pen = QPen(Qt.transparent, 0)
+                                transparent_pen.setCosmetic(True)
+                                item.setPen(transparent_pen)
+                        
+                        # Create high-quality pixmap
+                        pixmap = QPixmap(capture_width, capture_height)
+                        pixmap.fill(Qt.white)  # White background
+                        
+                        # Create QPainter for high-quality rendering
+                        from PyQt5.QtGui import QPainter
+                        painter = QPainter(pixmap)
+                        
+                        # Enable high-quality rendering
+                        painter.setRenderHint(QPainter.Antialiasing)
+                        painter.setRenderHint(QPainter.TextAntialiasing)
+                        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                        
+                        # Define the source rectangle (scene coordinates)
+                        source_rect = QRectF(capture_x, capture_y, capture_width, capture_height)
+                        
+                        # Define the target rectangle (pixmap coordinates)
+                        target_rect = QRectF(0, 0, capture_width, capture_height)
+                        
+                        # Render the scene area to the pixmap
+                        self.cutter_view.scene.render(painter, target_rect, source_rect)
+                        painter.end()
+                        
+                        # Restore visibility of hidden frame items
+                        for frame_item in hidden_frames:
+                            frame_item.setVisible(True)
+                        
+                        # Restore original shape pens
+                        for item, original_pen in original_shape_pens:
+                            item.setPen(original_pen)
+                        
+                        # Save PNG file to blobs directory
+                        png_filename = f"{box_name}_box.png"
+                        png_path = os.path.join(blobs_dir, png_filename)
+                        
+                        success = pixmap.save(png_path, "PNG")
+                        
+                        if success:
+                            print(f"Box {box_name} saved as PNG: {png_path}")
+                            boxes_saved += 1
+                        else:
+                            print(f"Error: Failed to save box {box_name} to {png_path}")
             
-            # Create high-quality pixmap at native resolution
-            pixmap = QPixmap(capture_width, capture_height)
-            pixmap.fill(Qt.white)  # White background
-            
-            # Create QPainter for high-quality rendering
-            from PyQt5.QtGui import QPainter
-            painter = QPainter(pixmap)
-            
-            # Enable high-quality rendering
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.TextAntialiasing)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            
-            # Define the source rectangle (scene coordinates)
-            source_rect = QRectF(capture_x, capture_y, capture_width, capture_height)
-            
-            # Define the target rectangle (pixmap coordinates)
-            target_rect = QRectF(0, 0, capture_width, capture_height)
-            
-            # Render the scene area to the pixmap
-            self.cutter_view.scene.render(painter, target_rect, source_rect)
-            painter.end()
-            
-            # Get save file path - Default to TIFF for maximum quality
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save A1 Box Area", "A1_box_area.tiff", 
-                "TIFF Files (*.tiff);;BMP Files (*.bmp);;PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)"
-            )
-            
-            if file_path:
-                # Determine format from file extension
-                if file_path.lower().endswith(('.jpg', '.jpeg')):
-                    format_type = "JPEG"
-                    # Save with high quality for JPEG
-                    success = pixmap.save(file_path, format_type, 95)  # 95% quality
-                elif file_path.lower().endswith('.bmp'):
-                    format_type = "BMP"
-                    success = pixmap.save(file_path, format_type)
-                elif file_path.lower().endswith(('.tiff', '.tif')):
-                    format_type = "TIFF"
-                    success = pixmap.save(file_path, format_type)
-                else:
-                    format_type = "PNG"
-                    success = pixmap.save(file_path, format_type)
-                
-                if success:
-                    print(f"A1 box area saved successfully: {file_path}")
-                    print(f"Image dimensions: {capture_width}x{capture_height} pixels")
-                    print(f"Box area: A1 with {margin}px margin on all sides")
-                else:
-                    print(f"Error: Failed to save A1 box area to {file_path}")
+            print(f"Successfully saved {boxes_saved} box PNG files to blobs directory")
             
         except Exception as e:
-            print(f"Error saving A1 box area: {e}")
+            print(f"Error saving box PNG files: {e}")
     
     def toggle_grid(self):
         """Toggle the 250x250 grid on/off"""
