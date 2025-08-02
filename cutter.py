@@ -1411,6 +1411,9 @@ class CutterWindow(QMainWindow):
         self.setWindowTitle("Cutter - Shape Viewer")
         self.setGeometry(100, 100, 1200, 800)
         
+        # Store the path of the currently imported CSV file
+        self.current_csv_file = None
+        
         # Create central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1437,13 +1440,13 @@ class CutterWindow(QMainWindow):
         cut_btn.clicked.connect(self.perform_cut)
         toolbar_layout.addWidget(cut_btn)
         
-        svg_btn = QPushButton("Show Borders")
-        svg_btn.clicked.connect(self.export_svg)
-        toolbar_layout.addWidget(svg_btn)
-        
         save_boxes_btn = QPushButton("Save Boxes")
         save_boxes_btn.clicked.connect(self.save_a1_box)
         toolbar_layout.addWidget(save_boxes_btn)
+        
+        report_btn = QPushButton("Report")
+        report_btn.clicked.connect(self.create_shape_report)
+        toolbar_layout.addWidget(report_btn)
         
         toolbar_layout.addStretch()
         layout.addLayout(toolbar_layout)
@@ -1562,6 +1565,236 @@ class CutterWindow(QMainWindow):
                     item.setPen(QPen(QColor(0, 0, 0), 0))
         
         print(f"Restored original colors to {shapes_restored} shapes")
+
+    def create_shape_report(self):
+        """Create an Excel report counting shapes by their properties with color-coded cells"""
+        try:
+            from datetime import datetime
+            
+            # Check if we have a currently imported CSV file
+            if not self.current_csv_file:
+                print("Error: No CSV file has been imported yet. Please import a CSV file first.")
+                return
+            
+            # Try to import openpyxl for Excel file creation
+            try:
+                from openpyxl import Workbook
+                from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            except ImportError:
+                print("Error: openpyxl library is required for Excel report generation.")
+                print("Please install it using: pip install openpyxl")
+                return
+            
+            # Dictionary to store shape counts
+            shape_counts = {}
+            
+            # Read data directly from the currently imported CSV file
+            try:
+                with open(self.current_csv_file, 'r', newline='', encoding='utf-8') as csvfile:
+                    reader = csv.reader(csvfile)
+                    
+                    # Skip header row
+                    header = next(reader, None)
+                    if not header:
+                        print("Error: Empty CSV file")
+                        return
+                    
+                    # Process each row
+                    for row_num, row in enumerate(reader, start=2):
+                        try:
+                            if len(row) < 10:
+                                print(f"Warning: Row {row_num} has insufficient data, skipping")
+                                continue
+                            
+                            # Parse CSV data
+                            shape_type = row[1]
+                            width = float(row[4])
+                            height = float(row[5])
+                            fill_color = row[8] if row[8] else ""
+                            is_filled = row[9].lower() in ('true', '1', 'yes') if row[9] else False
+                            
+                            # Determine shape type and size based on width and height
+                            if shape_type == "Triangle":
+                                # For triangles, use width as the size
+                                size_key = f"{int(width)}X{int(width)} Triangle"
+                            else:  # Rectangle
+                                # For rectangles, distinguish between full and half rectangles
+                                w = int(width)
+                                h = int(height)
+                                if w == h:
+                                    # Square rectangle
+                                    size_key = f"{w}X{h}"
+                                else:
+                                    # Half rectangle (width != height)
+                                    size_key = f"{max(w, h)}X{min(w, h)}"
+                            
+                            # Determine color
+                            if is_filled and fill_color and fill_color.strip():
+                                color_hex = fill_color.upper()
+                            else:
+                                color_hex = "Transparent"
+                            
+                            # Create key for grouping (size_key, color)
+                            key = (size_key, color_hex)
+                            
+                            # Count this shape
+                            if key in shape_counts:
+                                shape_counts[key] += 1
+                            else:
+                                shape_counts[key] = 1
+                                
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Error parsing row {row_num}: {e}, skipping")
+                            continue
+                            
+            except Exception as e:
+                print(f"Error reading CSV file: {e}")
+                return
+            
+            # Show save file dialog
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"shape_report_{timestamp}.xlsx"
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Shape Report", default_filename,
+                "Excel Files (*.xlsx);;All Files (*)"
+            )
+            
+            if not file_path:
+                print("Report save cancelled by user")
+                return
+            
+            excel_path = file_path
+            
+            # Create workbook and worksheet
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Shape Report"
+            
+            # Define styles
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            header_alignment = Alignment(horizontal="center", vertical="center")
+            border = Border(
+                left=Side(style="thin"),
+                right=Side(style="thin"),
+                top=Side(style="thin"),
+                bottom=Side(style="thin")
+            )
+            
+            # Write headers
+            headers = ['Shape Type', 'Color', 'Count']
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = border
+            
+            # Sort by shape type, then color
+            sorted_shapes = sorted(shape_counts.items(), key=lambda x: (x[0][0], x[0][1]))
+            
+            # Write data rows
+            for row_idx, ((shape_type, color), count) in enumerate(sorted_shapes, 2):
+                # Shape Type column
+                type_cell = ws.cell(row=row_idx, column=1, value=shape_type)
+                type_cell.border = border
+                type_cell.alignment = Alignment(horizontal="center")
+                
+                # Color column - apply the actual color as background
+                color_cell = ws.cell(row=row_idx, column=2, value=color)
+                color_cell.border = border
+                color_cell.alignment = Alignment(horizontal="center")
+                
+                # Apply color formatting
+                if color != "Transparent" and color.startswith("#") and len(color) == 7:
+                    try:
+                        # Remove # and use hex color for background
+                        hex_color = color[1:]  # Remove #
+                        color_fill = PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
+                        color_cell.fill = color_fill
+                        
+                        # Calculate if we need light or dark text based on color brightness
+                        r = int(hex_color[0:2], 16)
+                        g = int(hex_color[2:4], 16)
+                        b = int(hex_color[4:6], 16)
+                        brightness = (r * 0.299 + g * 0.587 + b * 0.114)
+                        
+                        if brightness < 128:  # Dark background, use white text
+                            color_cell.font = Font(color="FFFFFF", bold=True)
+                        else:  # Light background, use black text
+                            color_cell.font = Font(color="000000", bold=True)
+                            
+                    except ValueError:
+                        # Invalid hex color, just use default formatting
+                        pass
+                elif color == "Transparent":
+                    # For transparent, use a light gray background with "Transparent" text
+                    transparent_fill = PatternFill(start_color="F0F0F0", end_color="F0F0F0", fill_type="solid")
+                    color_cell.fill = transparent_fill
+                    color_cell.font = Font(color="666666", italic=True)
+                
+                # Count column
+                count_cell = ws.cell(row=row_idx, column=3, value=count)
+                count_cell.border = border
+                count_cell.alignment = Alignment(horizontal="center")
+            
+            # Add total row at the bottom
+            total_shapes = sum(shape_counts.values())
+            total_row = len(sorted_shapes) + 3  # +3 for header row, blank row, and total row
+            
+            # Add a blank row for separation
+            blank_row = total_row - 1
+            
+            # Create total row with merged cells for "TOTAL" label
+            ws.merge_cells(f'A{total_row}:B{total_row}')
+            total_label_cell = ws.cell(row=total_row, column=1, value="TOTAL")
+            total_label_cell.font = Font(bold=True, size=12)
+            total_label_cell.alignment = Alignment(horizontal="center", vertical="center")
+            total_label_cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            total_label_cell.border = border
+            
+            # Apply border to merged cells
+            for col in range(2, 3):  # column B
+                cell = ws.cell(row=total_row, column=col)
+                cell.border = border
+                cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            
+            # Add total count
+            total_count_cell = ws.cell(row=total_row, column=3, value=total_shapes)
+            total_count_cell.font = Font(bold=True, size=12)
+            total_count_cell.alignment = Alignment(horizontal="center", vertical="center")
+            total_count_cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            total_count_cell.border = border
+            
+            # Auto-adjust column widths
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 30)  # Cap at 30 characters
+                ws.column_dimensions[column].width = adjusted_width
+            
+            # Save the workbook
+            wb.save(excel_path)
+            
+            total_shapes = sum(shape_counts.values())
+            print(f"Shape report created: {excel_path}")
+            print(f"Total shapes analyzed: {total_shapes}")
+            print(f"Unique shape types: {len(shape_counts)}")
+            
+            # Show summary in console
+            print("\nShape Summary:")
+            for (shape_type, color), count in sorted_shapes:
+                print(f"{shape_type}, {color}, {count} units")
+            
+        except Exception as e:
+            print(f"Error creating shape report: {e}")
 
     def save_a1_box(self):
         """Save PNG files for all boxes that contain shapes with 10-pixel margin"""
@@ -1730,6 +1963,9 @@ class CutterWindow(QMainWindow):
             "CSV Files (*.csv);;All Files (*)"
         )
         if file_path:
+            # Store the current CSV file path for reports
+            self.current_csv_file = file_path
+            
             try:
                 shapes_created = 0
                 self.cutter_view.clear_shapes()
