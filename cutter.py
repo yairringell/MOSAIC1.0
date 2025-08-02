@@ -1567,9 +1567,11 @@ class CutterWindow(QMainWindow):
         print(f"Restored original colors to {shapes_restored} shapes")
 
     def create_shape_report(self):
-        """Create an Excel report counting shapes by their properties with color-coded cells"""
+        """Create Excel reports - both general report and individual box reports"""
         try:
             from datetime import datetime
+            import os
+            import csv
             
             # Check if we have a currently imported CSV file
             if not self.current_csv_file:
@@ -1585,8 +1587,18 @@ class CutterWindow(QMainWindow):
                 print("Please install it using: pip install openpyxl")
                 return
             
-            # Dictionary to store shape counts
+            # Dictionary to store shape counts (general report)
             shape_counts = {}
+            
+            # Dictionary to store shapes by box (box reports)
+            box_shapes = {}  # box_name -> [(shape_type, color, count), ...]
+            
+            # Grid parameters for box calculation
+            box_size = 250
+            grid_cols = 6
+            grid_rows = 6
+            grid_offset_x = getattr(self.cutter_view, 'grid_offset_x', 0)
+            grid_offset_y = getattr(self.cutter_view, 'grid_offset_y', 0)
             
             # Read data directly from the currently imported CSV file
             try:
@@ -1608,6 +1620,8 @@ class CutterWindow(QMainWindow):
                             
                             # Parse CSV data
                             shape_type = row[1]
+                            x = float(row[2])
+                            y = float(row[3])
                             width = float(row[4])
                             height = float(row[5])
                             fill_color = row[8] if row[8] else ""
@@ -1637,11 +1651,49 @@ class CutterWindow(QMainWindow):
                             # Create key for grouping (size_key, color)
                             key = (size_key, color_hex)
                             
-                            # Count this shape
+                            # Count this shape for general report
                             if key in shape_counts:
                                 shape_counts[key] += 1
                             else:
                                 shape_counts[key] = 1
+                            
+                            # Determine which box this shape belongs to
+                            shape_center_x = x + width / 2
+                            shape_center_y = y + height / 2
+                            
+                            # Find the box that contains the shape's center
+                            box_col = int((shape_center_x - grid_offset_x) / box_size)
+                            box_row = int((shape_center_y - grid_offset_y) / box_size)
+                            
+                            # Debug: Print box calculation details for first few shapes
+                            if row_num <= 5:
+                                print(f"Debug Shape {row_num}: center=({shape_center_x:.1f}, {shape_center_y:.1f}), "
+                                      f"grid_offset=({grid_offset_x}, {grid_offset_y}), "
+                                      f"calculated_box=({box_col}, {box_row})")
+                            
+                            # Check if the shape is within the grid bounds
+                            if 0 <= box_col < grid_cols and 0 <= box_row < grid_rows:
+                                # Calculate box name (A1, B2, etc.)
+                                col_letter = chr(ord('A') + box_col)
+                                row_number = box_row + 1
+                                box_name = f"{col_letter}{row_number}"
+                                
+                                # Add to box shapes dictionary
+                                if box_name not in box_shapes:
+                                    box_shapes[box_name] = {}
+                                
+                                if key in box_shapes[box_name]:
+                                    box_shapes[box_name][key] += 1
+                                else:
+                                    box_shapes[box_name][key] = 1
+                                    
+                                # Debug: Print assignment for first few shapes
+                                if row_num <= 5:
+                                    print(f"Debug: Shape {row_num} assigned to box {box_name}")
+                            else:
+                                # Debug: Print shapes that fall outside grid
+                                if row_num <= 10:
+                                    print(f"Debug: Shape {row_num} outside grid bounds: box_col={box_col}, box_row={box_row}")
                                 
                         except (ValueError, IndexError) as e:
                             print(f"Warning: Error parsing row {row_num}: {e}, skipping")
@@ -1651,25 +1703,50 @@ class CutterWindow(QMainWindow):
                 print(f"Error reading CSV file: {e}")
                 return
             
-            # Show save file dialog
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_filename = f"shape_report_{timestamp}.xlsx"
+            # Debug: Print summary of what was found
+            print(f"Debug: Total unique shape types found: {len(shape_counts)}")
+            print(f"Debug: Boxes with shapes: {list(box_shapes.keys())}")
+            print(f"Debug: Total boxes with shapes: {len(box_shapes)}")
+            for box_name, shapes in box_shapes.items():
+                total_in_box = sum(shapes.values())
+                print(f"Debug: Box {box_name} has {total_in_box} shapes ({len(shapes)} unique types)")
             
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Shape Report", default_filename,
-                "Excel Files (*.xlsx);;All Files (*)"
+            # Show save directory dialog
+            from PyQt5.QtWidgets import QFileDialog
+            save_dir = QFileDialog.getExistingDirectory(
+                self, "Select Directory for Reports", "",
+                QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
             )
             
-            if not file_path:
-                print("Report save cancelled by user")
+            if not save_dir:
+                print("Report generation cancelled by user")
                 return
             
-            excel_path = file_path
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Create general report
+            self.create_general_report(shape_counts, save_dir, timestamp)
+            
+            # Create individual box reports
+            self.create_box_reports(box_shapes, save_dir, timestamp)
+            
+            print(f"All reports created in: {save_dir}")
+            print(f"General report + {len(box_shapes)} box reports generated")
+            
+        except Exception as e:
+            print(f"Error creating shape reports: {e}")
+    
+    def create_general_report(self, shape_counts, save_dir, timestamp):
+        """Create the general shape report"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            import os
             
             # Create workbook and worksheet
             wb = Workbook()
             ws = wb.active
-            ws.title = "Shape Report"
+            ws.title = "General Shape Report"
             
             # Define styles
             header_font = Font(bold=True, color="FFFFFF")
@@ -1696,105 +1773,212 @@ class CutterWindow(QMainWindow):
             
             # Write data rows
             for row_idx, ((shape_type, color), count) in enumerate(sorted_shapes, 2):
-                # Shape Type column
-                type_cell = ws.cell(row=row_idx, column=1, value=shape_type)
-                type_cell.border = border
-                type_cell.alignment = Alignment(horizontal="center")
-                
-                # Color column - apply the actual color as background
-                color_cell = ws.cell(row=row_idx, column=2, value=color)
-                color_cell.border = border
-                color_cell.alignment = Alignment(horizontal="center")
-                
-                # Apply color formatting
-                if color != "Transparent" and color.startswith("#") and len(color) == 7:
-                    try:
-                        # Remove # and use hex color for background
-                        hex_color = color[1:]  # Remove #
-                        color_fill = PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
-                        color_cell.fill = color_fill
-                        
-                        # Calculate if we need light or dark text based on color brightness
-                        r = int(hex_color[0:2], 16)
-                        g = int(hex_color[2:4], 16)
-                        b = int(hex_color[4:6], 16)
-                        brightness = (r * 0.299 + g * 0.587 + b * 0.114)
-                        
-                        if brightness < 128:  # Dark background, use white text
-                            color_cell.font = Font(color="FFFFFF", bold=True)
-                        else:  # Light background, use black text
-                            color_cell.font = Font(color="000000", bold=True)
-                            
-                    except ValueError:
-                        # Invalid hex color, just use default formatting
-                        pass
-                elif color == "Transparent":
-                    # For transparent, use a light gray background with "Transparent" text
-                    transparent_fill = PatternFill(start_color="F0F0F0", end_color="F0F0F0", fill_type="solid")
-                    color_cell.fill = transparent_fill
-                    color_cell.font = Font(color="666666", italic=True)
-                
-                # Count column
-                count_cell = ws.cell(row=row_idx, column=3, value=count)
-                count_cell.border = border
-                count_cell.alignment = Alignment(horizontal="center")
+                self.write_shape_row(ws, row_idx, shape_type, color, count, border)
             
-            # Add total row at the bottom
-            total_shapes = sum(shape_counts.values())
-            total_row = len(sorted_shapes) + 3  # +3 for header row, blank row, and total row
-            
-            # Add a blank row for separation
-            blank_row = total_row - 1
-            
-            # Create total row with merged cells for "TOTAL" label
-            ws.merge_cells(f'A{total_row}:B{total_row}')
-            total_label_cell = ws.cell(row=total_row, column=1, value="TOTAL")
-            total_label_cell.font = Font(bold=True, size=12)
-            total_label_cell.alignment = Alignment(horizontal="center", vertical="center")
-            total_label_cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-            total_label_cell.border = border
-            
-            # Apply border to merged cells
-            for col in range(2, 3):  # column B
-                cell = ws.cell(row=total_row, column=col)
-                cell.border = border
-                cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-            
-            # Add total count
-            total_count_cell = ws.cell(row=total_row, column=3, value=total_shapes)
-            total_count_cell.font = Font(bold=True, size=12)
-            total_count_cell.alignment = Alignment(horizontal="center", vertical="center")
-            total_count_cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-            total_count_cell.border = border
+            # Add total row
+            self.add_total_row(ws, len(sorted_shapes), sum(shape_counts.values()), border)
             
             # Auto-adjust column widths
-            for col in ws.columns:
-                max_length = 0
-                column = col[0].column_letter
-                for cell in col:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 30)  # Cap at 30 characters
-                ws.column_dimensions[column].width = adjusted_width
+            self.adjust_column_widths(ws)
             
             # Save the workbook
-            wb.save(excel_path)
+            general_report_path = os.path.join(save_dir, f"general_shape_report_{timestamp}.xlsx")
+            wb.save(general_report_path)
             
-            total_shapes = sum(shape_counts.values())
-            print(f"Shape report created: {excel_path}")
-            print(f"Total shapes analyzed: {total_shapes}")
-            print(f"Unique shape types: {len(shape_counts)}")
-            
-            # Show summary in console
-            print("\nShape Summary:")
-            for (shape_type, color), count in sorted_shapes:
-                print(f"{shape_type}, {color}, {count} units")
+            print(f"General report created: {general_report_path}")
             
         except Exception as e:
-            print(f"Error creating shape report: {e}")
+            print(f"Error creating general report: {e}")
+    
+    def create_box_reports(self, box_shapes, save_dir, timestamp):
+        """Create individual reports for each box"""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            import os
+            import traceback
+            
+            print(f"Debug: create_box_reports called with {len(box_shapes)} boxes")
+            
+            # Create a subdirectory for box reports
+            box_reports_dir = os.path.join(save_dir, f"box_reports_{timestamp}")
+            print(f"Debug: Creating box reports directory: {box_reports_dir}")
+            
+            if not os.path.exists(box_reports_dir):
+                os.makedirs(box_reports_dir)
+                print(f"Debug: Box reports directory created successfully")
+            else:
+                print(f"Debug: Box reports directory already exists")
+            
+            if not box_shapes:
+                print("Debug: No box shapes data - box_shapes dictionary is empty")
+                return
+            
+            for box_name, shapes in box_shapes.items():
+                print(f"Debug: Creating report for box {box_name} with {len(shapes)} shape types")
+                
+                # Create workbook for this box
+                wb = Workbook()
+                ws = wb.active
+                ws.title = f"Box {box_name} Report"
+                
+                # Define styles
+                header_font = Font(bold=True, color="FFFFFF")
+                header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                header_alignment = Alignment(horizontal="center", vertical="center")
+                border = Border(
+                    left=Side(style="thin"),
+                    right=Side(style="thin"),
+                    top=Side(style="thin"),
+                    bottom=Side(style="thin")
+                )
+                
+                # Add box title
+                title_cell = ws.cell(row=1, column=1, value=f"BOX {box_name} REPORT")
+                title_cell.font = Font(bold=True, size=16, color="000000")
+                title_cell.alignment = Alignment(horizontal="center", vertical="center")
+                ws.merge_cells('A1:C1')
+                
+                # Write headers
+                headers = ['Shape Type', 'Color', 'Count']
+                for col, header in enumerate(headers, 1):
+                    cell = ws.cell(row=3, column=col, value=header)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = header_alignment
+                    cell.border = border
+                
+                # Sort shapes by type, then color
+                sorted_shapes = sorted(shapes.items(), key=lambda x: (x[0][0], x[0][1]))
+                
+                # Write data rows
+                for row_idx, ((shape_type, color), count) in enumerate(sorted_shapes, 4):
+                    self.write_shape_row(ws, row_idx, shape_type, color, count, border)
+                
+                # Add total row for this box
+                total_shapes_in_box = sum(shapes.values())
+                self.add_total_row(ws, len(sorted_shapes), total_shapes_in_box, border, start_row=4)
+                
+                # Auto-adjust column widths
+                self.adjust_column_widths(ws)
+                
+                # Save the box report
+                box_report_path = os.path.join(box_reports_dir, f"box_{box_name}_report_{timestamp}.xlsx")
+                wb.save(box_report_path)
+                
+                print(f"Box {box_name} report created: {box_report_path}")
+                
+            print(f"Debug: Finished creating {len(box_shapes)} box reports in {box_reports_dir}")
+                
+        except Exception as e:
+            print(f"Error creating box reports: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def write_shape_row(self, ws, row_idx, shape_type, color, count, border):
+        """Write a single shape data row to the worksheet"""
+        from openpyxl.styles import PatternFill, Font, Alignment
+        
+        # Shape Type column
+        type_cell = ws.cell(row=row_idx, column=1, value=shape_type)
+        type_cell.border = border
+        type_cell.alignment = Alignment(horizontal="center")
+        
+        # Color column - apply the actual color as background
+        color_cell = ws.cell(row=row_idx, column=2, value=color)
+        color_cell.border = border
+        color_cell.alignment = Alignment(horizontal="center")
+        
+        # Apply color formatting
+        if color != "Transparent" and color.startswith("#") and len(color) == 7:
+            try:
+                # Remove # and use hex color for background
+                hex_color = color[1:]  # Remove #
+                color_fill = PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
+                color_cell.fill = color_fill
+                
+                # Calculate if we need light or dark text based on color brightness
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                brightness = (r * 0.299 + g * 0.587 + b * 0.114)
+                
+                if brightness < 128:  # Dark background, use white text
+                    color_cell.font = Font(color="FFFFFF", bold=True)
+                else:  # Light background, use black text
+                    color_cell.font = Font(color="000000", bold=True)
+                    
+            except ValueError:
+                # Invalid hex color, just use default formatting
+                pass
+        elif color == "Transparent":
+            # For transparent, use a light gray background with "Transparent" text
+            transparent_fill = PatternFill(start_color="F0F0F0", end_color="F0F0F0", fill_type="solid")
+            color_cell.fill = transparent_fill
+            color_cell.font = Font(color="666666", italic=True)
+        
+        # Count column
+        count_cell = ws.cell(row=row_idx, column=3, value=count)
+        count_cell.border = border
+        count_cell.alignment = Alignment(horizontal="center")
+    
+    def add_total_row(self, ws, num_data_rows, total_count, border, start_row=2):
+        """Add a total row to the worksheet"""
+        from openpyxl.styles import PatternFill, Font, Alignment
+        
+        total_row = start_row + num_data_rows + 1  # +1 for blank row
+        
+        # Create total row with merged cells for "TOTAL" label
+        ws.merge_cells(f'A{total_row}:B{total_row}')
+        total_label_cell = ws.cell(row=total_row, column=1, value="TOTAL")
+        total_label_cell.font = Font(bold=True, size=12)
+        total_label_cell.alignment = Alignment(horizontal="center", vertical="center")
+        total_label_cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        total_label_cell.border = border
+        
+        # Apply border to merged cells
+        for col in range(2, 3):  # column B
+            cell = ws.cell(row=total_row, column=col)
+            cell.border = border
+            cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        
+        # Add total count
+        total_count_cell = ws.cell(row=total_row, column=3, value=total_count)
+        total_count_cell.font = Font(bold=True, size=12)
+        total_count_cell.alignment = Alignment(horizontal="center", vertical="center")
+        total_count_cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        total_count_cell.border = border
+    
+    def adjust_column_widths(self, ws):
+        """Auto-adjust column widths for the worksheet"""
+        for col in ws.columns:
+            max_length = 0
+            column = None
+            
+            # Find a non-merged cell to get the column letter
+            for cell in col:
+                try:
+                    if hasattr(cell, 'column_letter'):
+                        column = cell.column_letter
+                        break
+                except:
+                    continue
+            
+            # If we couldn't find a column letter, skip this column
+            if column is None:
+                continue
+                
+            # Calculate max length for this column
+            for cell in col:
+                try:
+                    if hasattr(cell, 'value') and cell.value is not None:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                except:
+                    pass
+                    
+            adjusted_width = min(max_length + 2, 30)  # Cap at 30 characters
+            ws.column_dimensions[column].width = adjusted_width
 
     def save_a1_box(self):
         """Save PNG files for all boxes that contain shapes with 10-pixel margin"""
