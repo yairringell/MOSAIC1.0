@@ -742,15 +742,45 @@ class WorkspaceView(QGraphicsView):
         # Also connect to scene rect changes
         self.scene.sceneRectChanged.connect(self.update_scale_bars)
     
-    def create_drawing_cursor(self):
-        """Create a 3x3 black square cursor"""
-        # Create a 3x3 pixmap
-        pixmap = QPixmap(3, 3)
-        pixmap.fill(QColor(0, 0, 0))  # Fill with black
+    def create_drawing_cursor(self, color=None):
+        """Create a 10x10 cross cursor"""
+        # Use selected color if available, otherwise default to black
+        if color is None:
+            if self.main_window and hasattr(self.main_window, 'selected_color'):
+                color = self.main_window.selected_color
+            else:
+                color = QColor(0, 0, 0)  # Default black
         
-        # Create cursor with the pixmap, hotspot at center (1, 1)
-        cursor = QCursor(pixmap, 1, 1)
+        # If transparent color is selected, use black for visibility
+        if color.alpha() == 0:
+            color = QColor(0, 0, 0)  # Black for transparent selection
+        
+        # Create a 10x10 pixmap
+        pixmap = QPixmap(10, 10)
+        pixmap.fill(Qt.transparent)  # Transparent background
+        
+        # Create painter to draw the cross
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(color, 1))
+        
+        # Draw horizontal line (center row)
+        painter.drawLine(0, 4, 9, 4)
+        # Draw vertical line (center column)
+        painter.drawLine(4, 0, 4, 9)
+        
+        painter.end()
+        
+        # Create cursor with the pixmap, hotspot at center (4, 4)
+        cursor = QCursor(pixmap, 4, 4)
         return cursor
+    
+    def update_drawing_cursor_color(self):
+        """Update the drawing cursor to use the current selected color"""
+        self.drawing_cursor = self.create_drawing_cursor()
+        
+        # Update cursor if we're currently using the drawing cursor
+        if (self.drawing_mode or self.edge_mode or self.parallel_mode or self.half_rectangle_mode):
+            self.setCursor(self.drawing_cursor)
     
     def create_circle_cursor(self):
         """Create a small circle cursor for circle mode"""
@@ -1417,6 +1447,12 @@ class WorkspaceView(QGraphicsView):
             if self.main_window and hasattr(self.main_window, 'half_rect_btn'):
                 self.main_window.half_rect_btn.setChecked(False)
                 self.main_window.half_rect_btn.setText("Half Rectangle: OFF")
+        elif event.key() == Qt.Key_I:
+            # Add triangle at cursor position or center if cursor is outside workspace
+            size = self.rectangle_size
+            triangle_x, triangle_y = self.get_shape_placement_position(size)
+            color = self.main_window.selected_color if self.main_window else None
+            self.add_triangle(triangle_x, triangle_y, size, color)
         else:
             super().keyPressEvent(event)
     
@@ -1497,6 +1533,7 @@ class WorkspaceView(QGraphicsView):
         # Update cursor and drag mode based on drawing mode
         if self.drawing_mode:
             self.setDragMode(QGraphicsView.NoDrag)
+            self.update_drawing_cursor_color()  # Update cursor color before setting
             self.setCursor(self.drawing_cursor)
         else:
             self.setDragMode(QGraphicsView.RubberBandDrag)
@@ -1506,6 +1543,7 @@ class WorkspaceView(QGraphicsView):
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
             elif self.edge_mode:
+                self.update_drawing_cursor_color()  # Update cursor color before setting
                 self.setCursor(self.drawing_cursor)
             elif self.erase_mode:
                 self.setCursor(self.erase_cursor)
@@ -1522,6 +1560,7 @@ class WorkspaceView(QGraphicsView):
             self.edge_mode = False
             # Enable drawing functionality
             self.setDragMode(QGraphicsView.NoDrag)
+            self.update_drawing_cursor_color()  # Update cursor color before setting
             self.setCursor(self.drawing_cursor)
         else:
             # Reset to appropriate cursor and drag mode based on current mode
@@ -1532,6 +1571,7 @@ class WorkspaceView(QGraphicsView):
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
             elif self.drawing_mode or self.edge_mode or self.half_rectangle_mode:
+                self.update_drawing_cursor_color()  # Update cursor color before setting
                 self.setCursor(self.drawing_cursor)
             else:
                 self.setDragMode(QGraphicsView.RubberBandDrag)
@@ -1570,6 +1610,7 @@ class WorkspaceView(QGraphicsView):
             self.edge_mode = False
             # Enable drawing functionality
             self.setDragMode(QGraphicsView.NoDrag)
+            self.update_drawing_cursor_color()  # Update cursor color before setting
             self.setCursor(self.drawing_cursor)
         else:
             # Reset to appropriate cursor and drag mode based on current mode
@@ -1580,6 +1621,7 @@ class WorkspaceView(QGraphicsView):
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
             elif self.drawing_mode or self.parallel_mode or self.edge_mode:
+                self.update_drawing_cursor_color()  # Update cursor color before setting
                 self.setCursor(self.drawing_cursor)
             else:
                 self.setDragMode(QGraphicsView.RubberBandDrag)
@@ -1633,6 +1675,7 @@ class WorkspaceView(QGraphicsView):
             self.parallel_mode = False
             # Enable drawing functionality
             self.setDragMode(QGraphicsView.NoDrag)
+            self.update_drawing_cursor_color()  # Update cursor color before setting
             self.setCursor(self.drawing_cursor)
         self.edge_mode = enabled
         
@@ -1646,6 +1689,7 @@ class WorkspaceView(QGraphicsView):
             elif self.circle_mode:
                 self.setCursor(self.circle_cursor)
             elif self.drawing_mode:
+                self.update_drawing_cursor_color()  # Update cursor color before setting
                 self.setCursor(self.drawing_cursor)
             else:
                 self.setDragMode(QGraphicsView.RubberBandDrag)
@@ -2855,27 +2899,15 @@ class MainWindow(QMainWindow):
         
         self.workspace.add_rectangle(rect_x, rect_y, size, size, self.selected_color)
     
-    def update_rectangle_size(self):
-        """Update the rectangle size based on input"""
-        text = self.right_size_input.text().strip()
+    def set_rectangle_size_button(self, size):
+        """Set rectangle size using toggle buttons"""
+        # Update the workspace rectangle size
+        self.workspace.set_rectangle_size(size)
         
-        # If empty, set to default
-        if text == "":
-            self.right_size_input.setText("10")
-            self.workspace.set_rectangle_size(10)
-            return
-        
-        try:
-            size = int(text)
-            # Clamp size between 10 and 500
-            size = max(10, min(500, size))
-            self.workspace.set_rectangle_size(size)
-            # Update the field with the clamped value
-            self.right_size_input.setText(str(size))
-        except ValueError:
-            # If invalid input, reset to current size
-            current_size = self.workspace.rectangle_size
-            self.right_size_input.setText(str(current_size))
+        # Ensure only the selected button is checked
+        self.size_10_btn.setChecked(size == 10)
+        self.size_15_btn.setChecked(size == 15)
+        self.size_20_btn.setChecked(size == 20)
     
     def update_rectangle_spacing(self, text):
         """Update the rectangle spacing based on input"""
@@ -3309,15 +3341,32 @@ class MainWindow(QMainWindow):
         self.half_rect_btn.clicked.connect(self.toggle_half_rectangle_mode)
         right_layout.addWidget(self.half_rect_btn)
         
-        # Rectangle size input
-        size_layout = QHBoxLayout()
-        size_layout.addWidget(QLabel("Rectangle Size:"))
-        self.right_size_input = QLineEdit("10")
-        self.right_size_input.setMaximumWidth(80)
-        self.right_size_input.setPlaceholderText("Size")
-        self.right_size_input.editingFinished.connect(self.update_rectangle_size)
-        size_layout.addWidget(self.right_size_input)
-        right_layout.addLayout(size_layout)
+        # Rectangle size buttons - replace input field with toggle buttons
+        size_label = QLabel("Rectangle Size:")
+        right_layout.addWidget(size_label)
+        
+        size_buttons_layout = QHBoxLayout()
+        
+        # Create size toggle buttons
+        self.size_10_btn = QPushButton("10")
+        self.size_10_btn.setCheckable(True)
+        self.size_10_btn.setChecked(True)  # Default selection
+        self.size_10_btn.clicked.connect(lambda: self.set_rectangle_size_button(10))
+        size_buttons_layout.addWidget(self.size_10_btn)
+        
+        self.size_15_btn = QPushButton("15")
+        self.size_15_btn.setCheckable(True)
+        self.size_15_btn.setChecked(False)
+        self.size_15_btn.clicked.connect(lambda: self.set_rectangle_size_button(15))
+        size_buttons_layout.addWidget(self.size_15_btn)
+        
+        self.size_20_btn = QPushButton("20")
+        self.size_20_btn.setCheckable(True)
+        self.size_20_btn.setChecked(False)
+        self.size_20_btn.clicked.connect(lambda: self.set_rectangle_size_button(20))
+        size_buttons_layout.addWidget(self.size_20_btn)
+        
+        right_layout.addLayout(size_buttons_layout)
         
         # Circle mode toggle
         self.circle_btn = QPushButton("Circle Mode: OFF")
@@ -3673,6 +3722,10 @@ class MainWindow(QMainWindow):
         """Select a color from the palette"""
         self.selected_color = QColor(color_hex)
         self.selected_color_display.setStyleSheet(f"border: 1px solid black; background-color: {color_hex};")
+        
+        # Update drawing cursor color if workspace exists
+        if hasattr(self, 'workspace') and self.workspace:
+            self.workspace.update_drawing_cursor_color()
     
     def select_transparent_color(self):
         """Select transparent as the color"""
@@ -3683,6 +3736,10 @@ class MainWindow(QMainWindow):
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
             "stop:0 white, stop:0.49 white, stop:0.5 red, stop:1 red);"
         )
+        
+        # Update drawing cursor color if workspace exists
+        if hasattr(self, 'workspace') and self.workspace:
+            self.workspace.update_drawing_cursor_color()
 
 if __name__ == "__main__":
     import sys
