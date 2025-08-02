@@ -375,43 +375,44 @@ class CutterView(QGraphicsView):
         grid_rows = 6
         
         # Define colors for each box (36 different colors for 6x6 grid)
+        # Using distinct, high-contrast colors that are easy for OpenCV to detect
         box_colors = [
-            QColor(255, 0, 0),      # Red
-            QColor(0, 255, 0),      # Green  
-            QColor(0, 0, 255),      # Blue
-            QColor(255, 255, 0),    # Yellow
-            QColor(255, 0, 255),    # Magenta
-            QColor(0, 255, 255),    # Cyan
+            QColor(255, 0, 0),      # Bright Red
+            QColor(0, 255, 0),      # Bright Green  
+            QColor(0, 0, 255),      # Bright Blue
+            QColor(255, 255, 0),    # Bright Yellow
+            QColor(255, 0, 255),    # Bright Magenta
+            QColor(0, 255, 255),    # Bright Cyan
             QColor(255, 128, 0),    # Orange
-            QColor(128, 255, 0),    # Lime
-            QColor(0, 255, 128),    # Spring Green
-            QColor(0, 128, 255),    # Sky Blue
             QColor(128, 0, 255),    # Purple
-            QColor(255, 0, 128),    # Pink
-            QColor(192, 192, 192),  # Silver
-            QColor(128, 128, 128),  # Gray
-            QColor(128, 0, 0),      # Maroon
-            QColor(0, 128, 0),      # Dark Green
-            QColor(0, 0, 128),      # Navy
-            QColor(128, 128, 0),    # Olive
-            QColor(128, 0, 128),    # Purple Dark
-            QColor(0, 128, 128),    # Teal
-            QColor(255, 192, 203),  # Light Pink
-            QColor(255, 165, 0),    # Orange Red
-            QColor(255, 215, 0),    # Gold
-            QColor(173, 216, 230),  # Light Blue
-            QColor(144, 238, 144),  # Light Green
-            QColor(221, 160, 221),  # Plum
-            QColor(255, 182, 193),  # Light Pink
-            QColor(255, 218, 185),  # Peach
-            QColor(240, 230, 140),  # Khaki
-            QColor(230, 230, 250),  # Lavender
-            QColor(250, 128, 114),  # Salmon
-            QColor(255, 160, 122),  # Light Salmon
-            QColor(176, 196, 222),  # Light Steel Blue
-            QColor(205, 92, 92),    # Indian Red
-            QColor(255, 105, 180),  # Hot Pink
-            QColor(64, 224, 208)    # Turquoise
+            QColor(255, 0, 128),    # Hot Pink
+            QColor(0, 128, 255),    # Sky Blue
+            QColor(128, 255, 0),    # Lime Green
+            QColor(255, 64, 64),    # Light Red
+            QColor(64, 255, 64),    # Light Green
+            QColor(64, 64, 255),    # Light Blue
+            QColor(255, 255, 64),   # Light Yellow
+            QColor(255, 64, 255),   # Light Magenta
+            QColor(64, 255, 255),   # Light Cyan
+            QColor(192, 0, 0),      # Dark Red
+            QColor(0, 192, 0),      # Dark Green
+            QColor(0, 0, 192),      # Dark Blue
+            QColor(192, 192, 0),    # Dark Yellow
+            QColor(192, 0, 192),    # Dark Magenta
+            QColor(0, 192, 192),    # Dark Cyan
+            QColor(255, 96, 0),     # Red Orange
+            QColor(255, 0, 96),     # Pink Red
+            QColor(96, 255, 0),     # Yellow Green
+            QColor(0, 255, 96),     # Green Cyan  
+            QColor(96, 0, 255),     # Blue Purple
+            QColor(0, 96, 255),     # Cyan Blue
+            QColor(255, 192, 0),    # Golden Orange
+            QColor(255, 0, 192),    # Magenta Pink
+            QColor(192, 255, 0),    # Lime Yellow
+            QColor(0, 255, 192),    # Cyan Green
+            QColor(192, 0, 255),    # Purple Magenta
+            QColor(0, 192, 255),    # Blue Cyan
+            QColor(128, 64, 0)      # Brown
         ]
         
         # Find which boxes contain shapes and collect box information
@@ -504,6 +505,46 @@ class CutterView(QGraphicsView):
                         item.setBrush(QBrush(QColor(255, 255, 255)))  # Solid white
                         item.setPen(QPen(QColor(0, 0, 0), 0))  # Black frame
     
+    def fill_all_boxes_white(self):
+        """Fill all boxes with white color after saving files"""
+        if not self.grid_visible:
+            return  # No grid to reference
+        
+        # Calculate box positions and size
+        box_size = 250
+        grid_cols = 6
+        grid_rows = 6
+        
+        print("Filling all boxes with white color...")
+        
+        # Clear existing colored boxes first
+        items_to_remove = []
+        for cut_item in self.cut_lines:
+            if isinstance(cut_item, QGraphicsRectItem) and cut_item.brush().color() != Qt.transparent:
+                self.scene.removeItem(cut_item)
+                items_to_remove.append(cut_item)
+        
+        # Remove them from cut_lines list
+        for item in items_to_remove:
+            self.cut_lines.remove(item)
+        
+        # Create white rectangles for all boxes
+        for row in range(grid_rows):
+            for col in range(grid_cols):
+                # Calculate box position
+                box_x = self.grid_offset_x + (col * box_size)
+                box_y = self.grid_offset_y + (row * box_size)
+                
+                # Create white filled rectangle for this box
+                white_rect = QGraphicsRectItem(box_x, box_y, box_size, box_size)
+                white_rect.setPen(QPen(Qt.transparent))  # No border
+                white_rect.setBrush(QBrush(QColor(255, 255, 255)))  # White fill
+                white_rect.setZValue(-0.3)
+                self.scene.addItem(white_rect)
+                self.cut_lines.append(white_rect)
+        
+        print(f"Filled all {grid_rows * grid_cols} boxes with white color")
+
     def draw_red_green_border(self):
         """Detect all colored blobs and show their borders"""
         try:
@@ -542,43 +583,44 @@ class CutterView(QGraphicsView):
             
             # Create precise color detection based on the exact box colors used
             # Convert QColor RGB values to BGR ranges for OpenCV (with small tolerance)
+            # Using distinct, high-contrast colors that are easy for OpenCV to detect
             box_colors_rgb = [
-                (255, 0, 0),        # Red
-                (0, 255, 0),        # Green  
-                (0, 0, 255),        # Blue
-                (255, 255, 0),      # Yellow
-                (255, 0, 255),      # Magenta
-                (0, 255, 255),      # Cyan
+                (255, 0, 0),        # Bright Red
+                (0, 255, 0),        # Bright Green  
+                (0, 0, 255),        # Bright Blue
+                (255, 255, 0),      # Bright Yellow
+                (255, 0, 255),      # Bright Magenta
+                (0, 255, 255),      # Bright Cyan
                 (255, 128, 0),      # Orange
-                (128, 255, 0),      # Lime
-                (0, 255, 128),      # Spring Green
-                (0, 128, 255),      # Sky Blue
                 (128, 0, 255),      # Purple
-                (255, 0, 128),      # Pink
-                (192, 192, 192),    # Silver
-                (128, 128, 128),    # Gray
-                (128, 0, 0),        # Maroon
-                (0, 128, 0),        # Dark Green
-                (0, 0, 128),        # Navy
-                (128, 128, 0),      # Olive
-                (128, 0, 128),      # Purple Dark
-                (0, 128, 128),      # Teal
-                (255, 192, 203),    # Light Pink
-                (255, 165, 0),      # Orange Red
-                (255, 215, 0),      # Gold
-                (173, 216, 230),    # Light Blue
-                (144, 238, 144),    # Light Green
-                (221, 160, 221),    # Plum
-                (255, 182, 193),    # Light Pink 2
-                (255, 218, 185),    # Peach
-                (240, 230, 140),    # Khaki
-                (230, 230, 250),    # Lavender
-                (250, 128, 114),    # Salmon
-                (255, 160, 122),    # Light Salmon
-                (176, 196, 222),    # Light Steel Blue
-                (205, 92, 92),      # Indian Red
-                (255, 105, 180),    # Hot Pink
-                (64, 224, 208)      # Turquoise
+                (255, 0, 128),      # Hot Pink
+                (0, 128, 255),      # Sky Blue
+                (128, 255, 0),      # Lime Green
+                (255, 64, 64),      # Light Red
+                (64, 255, 64),      # Light Green
+                (64, 64, 255),      # Light Blue
+                (255, 255, 64),     # Light Yellow
+                (255, 64, 255),     # Light Magenta
+                (64, 255, 255),     # Light Cyan
+                (192, 0, 0),        # Dark Red
+                (0, 192, 0),        # Dark Green
+                (0, 0, 192),        # Dark Blue
+                (192, 192, 0),      # Dark Yellow
+                (192, 0, 192),      # Dark Magenta
+                (0, 192, 192),      # Dark Cyan
+                (255, 96, 0),       # Red Orange
+                (255, 0, 96),       # Pink Red
+                (96, 255, 0),       # Yellow Green
+                (0, 255, 96),       # Green Cyan  
+                (96, 0, 255),       # Blue Purple
+                (0, 96, 255),       # Cyan Blue
+                (255, 192, 0),      # Golden Orange
+                (255, 0, 192),      # Magenta Pink
+                (192, 255, 0),      # Lime Yellow
+                (0, 255, 192),      # Cyan Green
+                (192, 0, 255),      # Purple Magenta
+                (0, 192, 255),      # Blue Cyan
+                (128, 64, 0)        # Brown
             ]
             
             # Create color detection with precise ranges for each box color
@@ -1456,11 +1498,71 @@ class CutterWindow(QMainWindow):
         
         # Automatically show borders after cutting
         self.cutter_view.draw_red_green_border()
+        
+        # Fill all boxes with white after saving files
+        self.cutter_view.fill_all_boxes_white()
+        
+        # Restore original fill colors for all shapes
+        self.restore_original_colors()
     
     def export_svg(self):
         """Show borders of all colored blobs after cut operation"""
         self.cutter_view.draw_red_green_border()
     
+    def restore_original_colors(self):
+        """Restore original fill colors to all shapes and color their frames to match the fill color"""
+        from PyQt5.QtGui import QColor
+        
+        print("Restoring original colors to shapes...")
+        shapes_restored = 0
+        
+        # Get all items in the scene
+        for item in self.cutter_view.scene.items():
+            # Check if it's one of our shape types and has original color data
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)) and hasattr(item, 'original_fill_color'):
+                original_fill_color = getattr(item, 'original_fill_color', '')
+                original_frame_color = getattr(item, 'original_frame_color', '#8B4513')
+                original_is_filled = getattr(item, 'original_is_filled', False)
+                
+                try:
+                    # Handle fill color
+                    frame_color_to_use = QColor(0, 0, 0)  # Default to black
+                    
+                    if original_is_filled and original_fill_color and original_fill_color.strip():
+                        # Shape should be filled with original color
+                        fill_color = QColor(original_fill_color)
+                        if fill_color.isValid():
+                            item.set_fill_color(fill_color)
+                            frame_color_to_use = fill_color  # Frame color matches fill color
+                            print(f"Restored fill color {original_fill_color} to shape {getattr(item, 'serial_number', 'unknown')}")
+                        else:
+                            # Invalid fill color, keep transparent
+                            item.setBrush(QBrush(Qt.transparent))
+                            print(f"Invalid fill color format: {original_fill_color}")
+                    else:
+                        # Shape should be transparent (not filled)
+                        item.setBrush(QBrush(Qt.transparent))
+                        # For transparent shapes, use the original frame color if available
+                        if original_frame_color and original_frame_color.strip():
+                            potential_frame_color = QColor(original_frame_color)
+                            if potential_frame_color.isValid():
+                                frame_color_to_use = potential_frame_color
+                    
+                    # Set frame color (either matching fill color or original frame color)
+                    pen = QPen(frame_color_to_use, 0)  # Width 0 = cosmetic (always 1 pixel)
+                    pen.setCosmetic(True)
+                    item.setPen(pen)
+                    
+                    shapes_restored += 1
+                    
+                except Exception as e:
+                    print(f"Error setting colors for shape {getattr(item, 'serial_number', 'unknown')}: {e}")
+                    # Fallback to transparent with black frame
+                    item.setBrush(QBrush(Qt.transparent))
+                    item.setPen(QPen(QColor(0, 0, 0), 0))
+        
+        print(f"Restored original colors to {shapes_restored} shapes")
+
     def save_a1_box(self):
         """Save the A1 box area with 20-pixel margin as a high-quality image"""
         if not self.cutter_view.grid_visible:
@@ -1590,6 +1692,11 @@ class CutterWindow(QMainWindow):
                                 shape = ScalableRectangle(x, y, width, height)
                             
                             shape.serial_number = serial_number
+                            
+                            # Store original colors for later restoration
+                            shape.original_fill_color = fill_color if fill_color else ""
+                            shape.original_frame_color = frame_color if frame_color else "#8B4513"
+                            shape.original_is_filled = is_filled
                             
                             # Set rotation if specified
                             if rotation != 0:
