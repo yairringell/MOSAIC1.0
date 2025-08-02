@@ -1620,18 +1620,34 @@ class CutterWindow(QMainWindow):
                         capture_width = box_size + (2 * margin)
                         capture_height = box_size + (2 * margin)
                         
-                        # Temporarily hide only the extra shape frame items created by draw_shape_frames()
-                        # but keep the border lines created by draw_red_green_border()
+                        # Temporarily hide unwanted items during PNG rendering
+                        # Hide extra shape frames but keep blob borders, and hide circles/text
                         hidden_frames = []
                         for cut_item in self.cutter_view.cut_lines:
-                            # Check if this is a shape frame item (created by draw_shape_frames)
-                            # These have z-value of 1.5 and are rectangles/polygons matching shape bounds
+                            # Hide shape frame items (created by draw_shape_frames with z-value 1.5)
                             if (isinstance(cut_item, (QGraphicsRectItem, QGraphicsPolygonItem)) and
                                 cut_item.pen().color() == QColor(0, 0, 0) and
                                 cut_item.brush().color() == Qt.transparent and
                                 hasattr(cut_item, 'zValue') and cut_item.zValue() == 1.5):
                                 cut_item.setVisible(False)
                                 hidden_frames.append(cut_item)
+                            # Hide circles (QGraphicsEllipseItem from draw_red_green_border)
+                            elif hasattr(cut_item, '__class__') and 'Ellipse' in cut_item.__class__.__name__:
+                                cut_item.setVisible(False)
+                                hidden_frames.append(cut_item)
+                            # Hide text line items (created by draw_line_text with z-value 4)
+                            elif (hasattr(cut_item, '__class__') and 'Line' in cut_item.__class__.__name__ and
+                                  hasattr(cut_item, 'zValue') and cut_item.zValue() == 4):
+                                cut_item.setVisible(False)
+                                hidden_frames.append(cut_item)
+                        
+                        # Also hide any text items in the scene
+                        from PyQt5.QtWidgets import QGraphicsTextItem, QGraphicsEllipseItem
+                        hidden_text_and_circles = []
+                        for item in self.cutter_view.scene.items():
+                            if isinstance(item, (QGraphicsTextItem, QGraphicsEllipseItem)):
+                                hidden_text_and_circles.append((item, item.isVisible()))
+                                item.setVisible(False)
                         
                         # Also temporarily make shape frames transparent to match on-screen appearance
                         original_shape_pens = []
@@ -1671,9 +1687,13 @@ class CutterWindow(QMainWindow):
                         self.cutter_view.scene.render(painter, target_rect, source_rect)
                         painter.end()
                         
-                        # Restore visibility of hidden frame items
+                        # Restore visibility of all hidden items
                         for frame_item in hidden_frames:
                             frame_item.setVisible(True)
+                        
+                        # Restore visibility of text and circles
+                        for item, was_visible in hidden_text_and_circles:
+                            item.setVisible(was_visible)
                         
                         # Restore original shape pens
                         for item, original_pen in original_shape_pens:
