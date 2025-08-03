@@ -700,6 +700,12 @@ class WorkspaceView(QGraphicsView):
         # Safe mode variables
         self.safe_mode = False  # Safe mode to prevent overlapping shapes when drawing
         
+        # Move array mode variables
+        self.move_array_mode = False  # Move array mode for repositioning entire shape array
+        self.move_array_first_point = None  # First click point in move array mode
+        self.move_array_second_point = None  # Second click point in move array mode
+        self.move_array_step = 0  # 0 = waiting for first point, 1 = waiting for second point
+        
         # Enable keyboard events
         self.setFocusPolicy(Qt.StrongFocus)
         
@@ -714,6 +720,10 @@ class WorkspaceView(QGraphicsView):
         
         # Create paint cursor for paint mode
         self.paint_cursor = self.create_paint_cursor()
+        
+        # Create cross cursor for move array mode
+        self.cross_cursor = self.create_cross_cursor()
+        self.red_cross_cursor = self.create_red_cross_cursor()
         
         # Set initial cursor
         self.setCursor(Qt.ArrowCursor)
@@ -888,6 +898,60 @@ class WorkspaceView(QGraphicsView):
         
         # Create cursor with the colorful pixmap, hotspot at center
         cursor = QCursor(pixmap, size//2, size//2)
+        return cursor
+    
+    def create_cross_cursor(self):
+        """Create a cross cursor for move array mode"""
+        # Create a 21x21 pixmap for the cross cursor
+        size = 21
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)  # Transparent background
+        
+        # Create painter to draw the cross
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Draw a black cross
+        pen = QPen(QColor(0, 0, 0), 2)  # Black color, 2px width
+        painter.setPen(pen)
+        
+        center = size // 2
+        # Draw vertical line
+        painter.drawLine(center, 2, center, size - 3)
+        # Draw horizontal line
+        painter.drawLine(2, center, size - 3, center)
+        
+        painter.end()
+        
+        # Create cursor with the cross pixmap, hotspot at center
+        cursor = QCursor(pixmap, center, center)
+        return cursor
+    
+    def create_red_cross_cursor(self):
+        """Create a red cross cursor for move array mode (after first point selected)"""
+        # Create a 21x21 pixmap for the red cross cursor
+        size = 21
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)  # Transparent background
+        
+        # Create painter to draw the cross
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Draw a red cross
+        pen = QPen(QColor(255, 0, 0), 2)  # Red color, 2px width
+        painter.setPen(pen)
+        
+        center = size // 2
+        # Draw vertical line
+        painter.drawLine(center, 2, center, size - 3)
+        # Draw horizontal line
+        painter.drawLine(2, center, size - 3, center)
+        
+        painter.end()
+        
+        # Create cursor with the red cross pixmap, hotspot at center
+        cursor = QCursor(pixmap, center, center)
         return cursor
         
     def wheelEvent(self, event):
@@ -1695,6 +1759,37 @@ class WorkspaceView(QGraphicsView):
                 self.setDragMode(QGraphicsView.RubberBandDrag)
                 self.setCursor(Qt.ArrowCursor)
     
+    def set_move_array_mode(self, enabled):
+        """Enable or disable move array mode"""
+        self.move_array_mode = enabled
+        
+        if self.move_array_mode:
+            # Reset move array state
+            self.move_array_first_point = None
+            self.move_array_second_point = None
+            self.move_array_step = 0
+            
+            # Disable all other modes
+            self.drawing_mode = False
+            self.half_rectangle_mode = False
+            self.circle_mode = False
+            self.parallel_mode = False
+            self.erase_mode = False
+            self.paint_mode = False
+            self.edge_mode = False
+            
+            # Set cross cursor and disable rubber band drag
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.setCursor(self.cross_cursor)
+        else:
+            # Reset move array state
+            self.move_array_first_point = None
+            self.move_array_second_point = None
+            self.move_array_step = 0
+            
+            # Reset to normal state
+            self.setDragMode(QGraphicsView.RubberBandDrag)
+            self.setCursor(Qt.ArrowCursor)
 
     
     def erase_rectangles_at_position(self, pos):
@@ -1746,6 +1841,38 @@ class WorkspaceView(QGraphicsView):
             if isinstance(item, (ScalableRectangle, ScalableTriangle)):
                 item.fill_with_average_color()
     
+    def move_shapes_array(self, dx, dy):
+        """Move all shapes in the array by the specified offset"""
+        # Get all shapes in the scene
+        all_shapes = []
+        original_positions = []
+        
+        for item in self.scene.items():
+            if isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                all_shapes.append(item)
+                # Store original position for undo
+                original_positions.append(item.pos())
+        
+        if not all_shapes:
+            if self.main_window:
+                self.main_window.status_label.setText("No shapes to move")
+            return
+        
+        # Move all shapes
+        for shape in all_shapes:
+            current_pos = shape.pos()
+            new_pos = QPointF(current_pos.x() + dx, current_pos.y() + dy)
+            shape.setPos(new_pos)
+        
+        # Add to undo stack
+        if self.main_window:
+            self.main_window.add_to_undo_stack('move_array', {
+                'shapes': all_shapes,
+                'original_positions': original_positions,
+                'movement': (dx, dy)
+            })
+            self.main_window.status_label.setText(f"Moved {len(all_shapes)} shapes by ({dx:.1f}, {dy:.1f})")
+    
     def pan_workspace(self, dx, dy):
         """Pan the workspace view by the specified amount"""
         # Get current scroll bar values
@@ -1757,7 +1884,34 @@ class WorkspaceView(QGraphicsView):
         v_scroll.setValue(v_scroll.value() + dy)
     
     def mousePressEvent(self, event):
-        if self.paint_mode and event.button() == Qt.LeftButton:
+        if self.move_array_mode and event.button() == Qt.LeftButton:
+            # Move array mode: handle two-point selection for array movement
+            scene_pos = self.mapToScene(event.pos())
+            
+            if self.move_array_step == 0:
+                # First point selection
+                self.move_array_first_point = scene_pos
+                self.move_array_step = 1
+                self.setCursor(self.red_cross_cursor)
+                if self.main_window:
+                    self.main_window.status_label.setText("Move array mode: Click second point")
+            elif self.move_array_step == 1:
+                # Second point selection - calculate movement and apply it
+                self.move_array_second_point = scene_pos
+                
+                # Calculate the movement vector
+                dx = self.move_array_second_point.x() - self.move_array_first_point.x()
+                dy = self.move_array_second_point.y() - self.move_array_first_point.y()
+                
+                # Move all shapes in the array
+                self.move_shapes_array(dx, dy)
+                
+                # Reset move array mode
+                if self.main_window:
+                    self.main_window.move_array_btn.setChecked(False)
+                    self.main_window.toggle_move_array_mode()
+                
+        elif self.paint_mode and event.button() == Qt.LeftButton:
             # Paint mode: fill clicked rectangle or triangle with selected color or make transparent
             scene_pos = self.mapToScene(event.pos())
             items_at_pos = self.scene.items(scene_pos)
@@ -3061,6 +3215,42 @@ class MainWindow(QMainWindow):
         self.workspace.fill_selected_rectangles()
         self.status_label.setText("Filled selected rectangles")
     
+    def toggle_move_array_mode(self):
+        """Toggle move array mode"""
+        if self.move_array_btn.isChecked():
+            # Enable move array mode
+            self.workspace.set_move_array_mode(True)
+            self.move_array_btn.setText("Move Array: ON")
+            self.status_label.setText("Move array mode: Click first point")
+            
+            # Turn off other modes
+            if hasattr(self, 'drawing_btn') and self.drawing_btn.isChecked():
+                self.drawing_btn.setChecked(False)
+                self.toggle_drawing_mode()
+            if hasattr(self, 'erase_btn') and self.erase_btn.isChecked():
+                self.erase_btn.setChecked(False)
+                self.toggle_erase_mode()
+            if hasattr(self, 'paint_btn') and self.paint_btn.isChecked():
+                self.paint_btn.setChecked(False)
+                self.toggle_paint_mode()
+            if hasattr(self, 'circle_btn') and self.circle_btn.isChecked():
+                self.circle_btn.setChecked(False)
+                self.toggle_circle_mode()
+            if hasattr(self, 'edge_btn') and self.edge_btn.isChecked():
+                self.edge_btn.setChecked(False)
+                self.toggle_edge_mode()
+            if hasattr(self, 'half_rect_btn') and self.half_rect_btn.isChecked():
+                self.half_rect_btn.setChecked(False)
+                self.toggle_half_rectangle_mode()
+            if hasattr(self, 'right_parallel_btn') and self.right_parallel_btn.isChecked():
+                self.right_parallel_btn.setChecked(False)
+                self.toggle_parallel_mode_right()
+        else:
+            # Disable move array mode
+            self.workspace.set_move_array_mode(False)
+            self.move_array_btn.setText("Move Array")
+            self.status_label.setText("Ready")
+    
     def toggle_fill_half_rectangles_mode(self):
         """Toggle the mode for filling newly drawn half rectangles with black color"""
         if self.fill_half_rects_btn.isChecked():
@@ -3231,6 +3421,18 @@ class MainWindow(QMainWindow):
                 for rect in last_action['rectangles']:
                     self.workspace.scene.addItem(rect)
                 self.status_label.setText(f"Undid: restored {len(last_action['rectangles'])} green rectangles")
+            elif last_action['type'] == 'move_array':
+                # Restore original positions of moved shapes
+                move_data = last_action['rectangles']  # This contains the move data dict
+                shapes = move_data['shapes']
+                original_positions = move_data['original_positions']
+                
+                # Restore each shape to its original position
+                for i, shape in enumerate(shapes):
+                    if shape.scene():  # Check if shape is still in scene
+                        shape.setPos(original_positions[i])
+                
+                self.status_label.setText(f"Undid: restored positions of {len(shapes)} shapes")
         else:
             self.status_label.setText("Nothing to undo")
     
@@ -3252,10 +3454,18 @@ class MainWindow(QMainWindow):
         if len(self.undo_stack) >= 10:
             self.undo_stack.pop(0)
         
-        self.undo_stack.append({
-            'type': action_type,
-            'rectangles': rectangles.copy() if isinstance(rectangles, list) else [rectangles]
-        })
+        if action_type == 'move_array':
+            # For move_array, rectangles is actually a dict with shape move data
+            self.undo_stack.append({
+                'type': action_type,
+                'rectangles': rectangles  # Keep the dict structure as-is
+            })
+        else:
+            # For other actions, handle as before
+            self.undo_stack.append({
+                'type': action_type,
+                'rectangles': rectangles.copy() if isinstance(rectangles, list) else [rectangles]
+            })
     
     def create_left_taskbar(self):
         """Create the left taskbar with drawing tools"""
@@ -3300,6 +3510,18 @@ class MainWindow(QMainWindow):
         fill_btn = QPushButton("Fill Selected (C)")
         fill_btn.clicked.connect(self.fill_selected_rectangles)
         left_layout.addWidget(fill_btn)
+        
+        # Array Movement Section
+        array_movement_label = QLabel("Array Movement")
+        array_movement_label.setStyleSheet("font-weight: bold; font-size: 14px; margin: 10px 0px;")
+        left_layout.addWidget(array_movement_label)
+        
+        # Move Array button
+        self.move_array_btn = QPushButton("Move Array")
+        self.move_array_btn.setCheckable(True)
+        self.move_array_btn.setChecked(False)
+        self.move_array_btn.clicked.connect(self.toggle_move_array_mode)
+        left_layout.addWidget(self.move_array_btn)
         
         # Add status label
         self.status_label = QLabel("Ready")
