@@ -2127,11 +2127,117 @@ class CutterWindow(QMainWindow):
                             boxes_saved += 1
                         else:
                             print(f"Error: Failed to save box {box_name} to {png_path}")
+                        
+                        # Save CSV file with shapes in this box using box-relative coordinates
+                        self.save_box_shapes_csv(box_name, box_x, box_y, box_size, blobs_dir)
             
             print(f"Successfully saved {boxes_saved} box PNG files to blobs directory")
             
         except Exception as e:
             print(f"Error saving box PNG files: {e}")
+    
+    def save_box_shapes_csv(self, box_name, box_x, box_y, box_size, blobs_dir):
+        """Save shapes in a specific box to a CSV file with box-relative coordinates"""
+        try:
+            import csv
+            
+            # Calculate box rectangle
+            box_rect = QRectF(box_x, box_y, box_size, box_size)
+            
+            # Find all shapes that overlap with this box and meet the 25% inclusion threshold
+            box_shapes = []
+            for item in self.cutter_view.scene.items():
+                if (item != self.cutter_view.background_item and 
+                    item not in self.cutter_view.grid_items and 
+                    item not in self.cutter_view.grid_labels and
+                    item not in self.cutter_view.cut_lines and
+                    item != self.cutter_view.grid_handle and
+                    (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
+                    
+                    shape_rect = item.sceneBoundingRect()
+                    
+                    # Calculate the intersection area between shape and box
+                    intersection = box_rect.intersected(shape_rect)
+                    if not intersection.isEmpty():
+                        # Calculate overlap percentage relative to the shape size
+                        shape_area = shape_rect.width() * shape_rect.height()
+                        intersection_area = intersection.width() * intersection.height()
+                        overlap_percentage = (intersection_area / shape_area) * 100 if shape_area > 0 else 0
+                        
+                        # Use 25% overlap threshold (same as inclusion logic)
+                        if overlap_percentage >= 25.0:
+                            box_shapes.append(item)
+            
+            if not box_shapes:
+                print(f"No shapes found in box {box_name} - skipping CSV creation")
+                return
+            
+            # Sort shapes from top to bottom (by Y coordinate)
+            box_shapes.sort(key=lambda item: item.pos().y())
+            
+            # Create CSV file for this box
+            csv_filename = f"{box_name}_shapes.csv"
+            csv_path = os.path.join(blobs_dir, csv_filename)
+            
+            with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write header
+                writer.writerow([
+                    'Serial_Number', 'Shape_Type', 'X', 'Y', 'Width', 'Height', 
+                    'Rotation', 'Frame_Color', 'Fill_Color', 'Is_Filled'
+                ])
+                
+                # Write shape data with box-relative coordinates (top-left corner as 0,0)
+                for item in box_shapes:
+                    # Get shape properties
+                    serial_number = getattr(item, 'serial_number', 0)
+                    
+                    # Determine shape type and get proper dimensions
+                    if isinstance(item, ScalableTriangle):
+                        shape_type = "Triangle"
+                        # For triangles, use the stored size parameter for both width and height
+                        size = getattr(item, 'size', 0)
+                        width = size
+                        height = size
+                    else:
+                        shape_type = "Rectangle"
+                        # For rectangles, get dimensions from the internal rect
+                        rect = item.rect()
+                        width = rect.width()
+                        height = rect.height()
+                    
+                    # Get position relative to box (shape position - box position)
+                    shape_pos = item.pos()
+                    relative_x = shape_pos.x() - box_x
+                    relative_y = shape_pos.y() - box_y
+                    
+                    # Get rotation
+                    rotation = getattr(item, 'current_rotation', 0)
+                    
+                    # Get original colors
+                    original_fill_color = getattr(item, 'original_fill_color', '')
+                    original_frame_color = getattr(item, 'original_frame_color', '#8B4513')
+                    original_is_filled = getattr(item, 'original_is_filled', False)
+                    
+                    # Write row
+                    writer.writerow([
+                        serial_number,
+                        shape_type,
+                        f"{relative_x:.2f}",
+                        f"{relative_y:.2f}",
+                        f"{width:.2f}",
+                        f"{height:.2f}",
+                        f"{rotation:.2f}",
+                        original_frame_color,
+                        original_fill_color,
+                        original_is_filled
+                    ])
+            
+            print(f"Box {box_name} shapes saved to CSV: {csv_path} ({len(box_shapes)} shapes)")
+            
+        except Exception as e:
+            print(f"Error saving CSV for box {box_name}: {e}")
     
     def toggle_grid(self):
         """Toggle the 250x250 grid on/off"""
