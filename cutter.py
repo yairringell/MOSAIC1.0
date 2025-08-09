@@ -349,6 +349,9 @@ class CutterView(QGraphicsView):
         self.grid_offset_x = 0
         self.grid_offset_y = 0
         
+        # Store inclusion data for consistent numbering and debugging
+        self.box_inclusion_data = {}  # Dictionary to store which shapes belong to which boxes
+        
         # Create scale bars
         self.horizontal_scale_bar = ScaleBar('horizontal', self)
         self.vertical_scale_bar = ScaleBar('vertical', self)
@@ -579,6 +582,9 @@ class CutterView(QGraphicsView):
         if not self.grid_visible:
             return  # No grid to reference
         
+        # Clear previous inclusion data
+        self.box_inclusion_data = {}
+        
         # Calculate box positions and size
         box_size = 250
         grid_cols = 6
@@ -691,6 +697,7 @@ class CutterView(QGraphicsView):
                 # Find which box has the largest overlap with this shape
                 max_overlap_area = 0
                 best_box_color = None
+                best_box_info = None
                 
                 for box_info in boxes_with_shapes:
                     if box_info['rect'].intersects(shape_rect):
@@ -700,6 +707,7 @@ class CutterView(QGraphicsView):
                         if overlap_area > max_overlap_area:
                             max_overlap_area = overlap_area
                             best_box_color = box_info['color']
+                            best_box_info = box_info
                 
                 # Color the shape based on overlap
                 if best_box_color and max_overlap_area > 0:
@@ -710,6 +718,13 @@ class CutterView(QGraphicsView):
                         # Fill with the box color
                         item.setBrush(QBrush(best_box_color))  # Box color
                         item.setPen(QPen(best_box_color, 0))  # Matching frame
+                        
+                        # Store inclusion data - this shape belongs to this box
+                        box_index = best_box_info['box_index']
+                        if box_index not in self.box_inclusion_data:
+                            self.box_inclusion_data[box_index] = []
+                        self.box_inclusion_data[box_index].append(item)
+                        
                     else:  # Less than 25% of shape is in any box
                         # Fill with white
                         item.setBrush(QBrush(QColor(255, 255, 255)))  # Solid white
@@ -2405,32 +2420,43 @@ class CutterWindow(QMainWindow):
         try:
             import csv
             
-            # Calculate box rectangle
-            box_rect = QRectF(box_x, box_y, box_size, box_size)
+            # Calculate box index from box name (A1=0, A2=1, ..., B1=6, B2=7, etc.)
+            col_letter = box_name[0]
+            row_number = int(box_name[1:])
+            col = ord(col_letter) - ord('A')
+            row = row_number - 1
+            box_index = row * 6 + col
             
-            # Find all shapes that overlap with this box and meet the 25% inclusion threshold
+            # Use stored inclusion data from the first shape selection
             box_shapes = []
-            for item in self.cutter_view.scene.items():
-                if (item != self.cutter_view.background_item and 
-                    item not in self.cutter_view.grid_items and 
-                    item not in self.cutter_view.grid_labels and
-                    item not in self.cutter_view.cut_lines and
-                    item != self.cutter_view.grid_handle and
-                    (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
-                    
-                    shape_rect = item.sceneBoundingRect()
-                    
-                    # Calculate the intersection area between shape and box
-                    intersection = box_rect.intersected(shape_rect)
-                    if not intersection.isEmpty():
-                        # Calculate overlap percentage relative to the shape size
-                        shape_area = shape_rect.width() * shape_rect.height()
-                        intersection_area = intersection.width() * intersection.height()
-                        overlap_percentage = (intersection_area / shape_area) * 100 if shape_area > 0 else 0
+            if box_index in self.cutter_view.box_inclusion_data:
+                box_shapes = self.cutter_view.box_inclusion_data[box_index]
+                print(f"Using stored inclusion data for box {box_name} (index {box_index}): {len(box_shapes)} shapes")
+            else:
+                print(f"No inclusion data found for box {box_name} (index {box_index}) - using fallback calculation")
+                # Fallback to original calculation if no stored data
+                box_rect = QRectF(box_x, box_y, box_size, box_size)
+                for item in self.cutter_view.scene.items():
+                    if (item != self.cutter_view.background_item and 
+                        item not in self.cutter_view.grid_items and 
+                        item not in self.cutter_view.grid_labels and
+                        item not in self.cutter_view.cut_lines and
+                        item != self.cutter_view.grid_handle and
+                        (isinstance(item, ScalableRectangle) or isinstance(item, ScalableTriangle))):
                         
-                        # Use 25% overlap threshold (same as inclusion logic)
-                        if overlap_percentage >= 25.0:
-                            box_shapes.append(item)
+                        shape_rect = item.sceneBoundingRect()
+                        
+                        # Calculate the intersection area between shape and box
+                        intersection = box_rect.intersected(shape_rect)
+                        if not intersection.isEmpty():
+                            # Calculate overlap percentage relative to the shape size
+                            shape_area = shape_rect.width() * shape_rect.height()
+                            intersection_area = intersection.width() * intersection.height()
+                            overlap_percentage = (intersection_area / shape_area) * 100 if shape_area > 0 else 0
+                            
+                            # Use 25% overlap threshold (same as inclusion logic)
+                            if overlap_percentage >= 25.0:
+                                box_shapes.append(item)
             
             if not box_shapes:
                 print(f"No shapes found in box {box_name} - skipping CSV creation")
