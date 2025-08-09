@@ -352,6 +352,10 @@ class CutterView(QGraphicsView):
         # Store inclusion data for consistent numbering and debugging
         self.box_inclusion_data = {}  # Dictionary to store which shapes belong to which boxes
         
+        # Shape number display tracking
+        self.numbers_visible = False
+        self.number_text_items = []  # List to store text items showing shape numbers
+        
         # Create scale bars
         self.horizontal_scale_bar = ScaleBar('horizontal', self)
         self.vertical_scale_bar = ScaleBar('vertical', self)
@@ -409,6 +413,10 @@ class CutterView(QGraphicsView):
     
     def clear_shapes(self):
         """Clear all shapes but preserve background items"""
+        # First hide shape numbers if they are visible
+        if self.numbers_visible:
+            self.hide_shape_numbers()
+        
         # Remove all items except background, grid, grid labels, cut lines, and grid handle
         items_to_remove = []
         for item in self.scene.items():
@@ -424,6 +432,78 @@ class CutterView(QGraphicsView):
             self.scene.removeItem(item)
         
         print(f"Cleared {len(items_to_remove)} shape items")
+    
+    def toggle_shape_numbers(self):
+        """Toggle display of shape serial numbers on shapes"""
+        if self.numbers_visible:
+            self.hide_shape_numbers()
+        else:
+            self.show_shape_numbers()
+    
+    def show_shape_numbers(self):
+        """Display array position numbers on all shapes"""
+        if self.numbers_visible:
+            return  # Already showing numbers
+        
+        self.numbers_visible = True
+        
+        # Get all shapes in the scene and sort them by Y position (same as CSV array order)
+        shapes = []
+        for item in self.scene.items():
+            if hasattr(item, 'serial_number') and isinstance(item, (ScalableRectangle, ScalableTriangle)):
+                shapes.append(item)
+        
+        # Sort shapes by their Y position (top to bottom) - same order as CSV array
+        shapes.sort(key=lambda item: item.pos().y())
+        
+        # Display array position number (1-based) on each shape
+        for index, shape in enumerate(shapes):
+            array_position = index + 1  # 1-based numbering
+            
+            # Create text item for this shape's array position
+            text_item = QGraphicsTextItem(str(array_position))
+            
+            # Set very small font
+            font = QFont()
+            font.setPointSize(4)  # Much smaller font
+            font.setBold(True)
+            text_item.setFont(font)
+            
+            # Set text color to black for visibility
+            text_item.setDefaultTextColor(QColor(0, 0, 0))
+            
+            # Position text at the center of the shape
+            shape_rect = shape.sceneBoundingRect()
+            text_rect = text_item.boundingRect()
+            
+            # Center the text on the shape
+            text_x = shape_rect.center().x() - text_rect.width() / 2
+            text_y = shape_rect.center().y() - text_rect.height() / 2
+            text_item.setPos(text_x, text_y)
+            
+            # Set high z-value to ensure text appears on top
+            text_item.setZValue(100)
+            
+            # Add to scene and track it
+            self.scene.addItem(text_item)
+            self.number_text_items.append(text_item)
+        
+        print(f"Showing array position numbers on {len(self.number_text_items)} shapes")
+    
+    def hide_shape_numbers(self):
+        """Hide all shape serial numbers"""
+        if not self.numbers_visible:
+            return  # Already hidden
+        
+        self.numbers_visible = False
+        
+        # Remove all number text items
+        for text_item in self.number_text_items:
+            if text_item.scene():
+                self.scene.removeItem(text_item)
+        
+        self.number_text_items.clear()
+        print("Hidden shape numbers")
     
     def create_grid(self):
         """Create a 6x6 grid with boxes of 250x250 pixels each"""
@@ -1727,6 +1807,10 @@ class CutterWindow(QMainWindow):
         report_btn.clicked.connect(self.create_shape_report)
         toolbar_layout.addWidget(report_btn)
         
+        organize_btn = QPushButton("Organize")
+        organize_btn.clicked.connect(self.toggle_shape_numbers)
+        toolbar_layout.addWidget(organize_btn)
+        
         toolbar_layout.addStretch()
         layout.addLayout(toolbar_layout)
         
@@ -1757,6 +1841,13 @@ class CutterWindow(QMainWindow):
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+        
+        # Organize menu
+        organize_menu = menu_bar.addMenu("Organize")
+        
+        show_numbers_action = QAction("Show Shape Numbers", self)
+        show_numbers_action.triggered.connect(self.toggle_shape_numbers)
+        organize_menu.addAction(show_numbers_action)
     
     def load_background(self):
         """Load background image"""
@@ -1768,6 +1859,10 @@ class CutterWindow(QMainWindow):
             pixmap = QPixmap(file_path)
             if not pixmap.isNull():
                 self.cutter_view.set_background_image(pixmap)
+    
+    def toggle_shape_numbers(self):
+        """Toggle display of shape serial numbers on shapes"""
+        self.cutter_view.toggle_shape_numbers()
     
     def clear_all(self):
         """Clear all shapes and cut lines"""
