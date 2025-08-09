@@ -441,7 +441,7 @@ class CutterView(QGraphicsView):
             self.show_shape_numbers()
     
     def show_shape_numbers(self):
-        """Display array position numbers on all shapes"""
+        """Display array position numbers on all shapes and draw first 10 shapes in order"""
         if self.numbers_visible:
             return  # Already showing numbers
         
@@ -460,12 +460,28 @@ class CutterView(QGraphicsView):
         for index, shape in enumerate(shapes):
             array_position = index + 1  # 1-based numbering
             
+            # Restore original colors for the shape
+            original_fill_color = getattr(shape, 'original_fill_color', '')
+            original_frame_color = getattr(shape, 'original_frame_color', '#8B4513')
+            original_is_filled = getattr(shape, 'original_is_filled', False)
+            
+            # Set frame color
+            frame_color = QColor(original_frame_color) if original_frame_color else QColor(139, 69, 19)
+            shape.setPen(QPen(frame_color, 0))
+            
+            # Set fill color
+            if original_is_filled and original_fill_color:
+                fill_color = QColor(original_fill_color)
+                shape.setBrush(QBrush(fill_color))
+            else:
+                shape.setBrush(QBrush(Qt.transparent))
+            
             # Create text item for this shape's array position
             text_item = QGraphicsTextItem(str(array_position))
             
             # Set very small font
             font = QFont()
-            font.setPointSize(4)  # Much smaller font
+            font.setPointSize(1)  # Smallest possible font
             font.setBold(True)
             text_item.setFont(font)
             
@@ -488,7 +504,150 @@ class CutterView(QGraphicsView):
             self.scene.addItem(text_item)
             self.number_text_items.append(text_item)
         
+        # Draw first 10 shapes in array order starting at (10,10) with 25px spacing
+        self.draw_array_reference(shapes)
+        
         print(f"Showing array position numbers on {len(self.number_text_items)} shapes")
+    
+    def draw_array_reference(self, first_shapes):
+        """Draw reference shapes: first half at (10,10), second half at (10,400), both color-grouped"""
+        start_center_x = 10
+        start_center_y = 10
+        spacing = 18  # Distance between centers of shapes
+        max_x = 570  # Maximum x position before starting new row
+        row_spacing = 18  # Distance between rows
+        second_half_start_y = 410
+        
+        # First split the array in half based on original order
+        first_half_size = len(first_shapes) // 2
+        first_half_shapes = first_shapes[:first_half_size]
+        second_half_shapes = first_shapes[first_half_size:]
+        
+        # Function to group shapes by color within a half
+        def group_shapes_by_color(shapes, start_index):
+            color_groups = {}
+            for i, shape in enumerate(shapes):
+                original_index = start_index + i
+                # Get the original fill color for grouping
+                fill_color = getattr(shape, 'original_fill_color', '')
+                frame_color = getattr(shape, 'original_frame_color', '#8B4513')
+                is_filled = getattr(shape, 'original_is_filled', False)
+                
+                # Use fill color if filled, otherwise use frame color for grouping
+                group_color = fill_color if (is_filled and fill_color) else frame_color
+                
+                if group_color not in color_groups:
+                    color_groups[group_color] = []
+                color_groups[group_color].append((original_index, shape))
+            
+            # Sort color groups for consistent ordering and flatten
+            sorted_color_groups = sorted(color_groups.items())
+            result = []
+            for group_color, shapes_in_group in sorted_color_groups:
+                for original_index, shape in shapes_in_group:
+                    result.append((original_index, shape))
+            return result
+        
+        # Group first half by color and display at (10,10)
+        first_half_grouped = group_shapes_by_color(first_half_shapes, 0)
+        current_x = start_center_x
+        current_y = start_center_y
+        
+        for original_index, original_shape in first_half_grouped:
+            self._draw_single_reference_shape(original_shape, original_index, current_x, current_y)
+            
+            # Move to next position
+            current_x += spacing
+            # Check if we need to start a new row
+            if current_x > max_x:
+                current_x = start_center_x
+                current_y += row_spacing
+        
+        # Group second half by color and display at (10,400)
+        second_half_grouped = group_shapes_by_color(second_half_shapes, first_half_size)
+        current_x = start_center_x
+        current_y = second_half_start_y
+        
+        for original_index, original_shape in second_half_grouped:
+            self._draw_single_reference_shape(original_shape, original_index, current_x, current_y)
+            
+            # Move to next position
+            current_x += spacing
+            # Check if we need to start a new row
+            if current_x > max_x:
+                current_x = start_center_x
+                current_y += row_spacing
+    
+    def _draw_single_reference_shape(self, original_shape, original_index, center_x, center_y):
+        """Helper method to draw a single reference shape"""
+        if isinstance(original_shape, ScalableRectangle):
+            # Get original rectangle dimensions from rect()
+            orig_rect = original_shape.rect()
+            width = orig_rect.width()
+            height = orig_rect.height()
+            
+            # Create rectangle at (0,0) with original dimensions
+            ref_shape = QGraphicsRectItem(0, 0, width, height)
+            
+            # Position the shape so its center is at the target center
+            ref_shape.setPos(center_x - width/2, center_y - height/2)
+            
+            # No rotation - keep all shapes at 0 degrees
+                
+        else:  # ScalableTriangle
+            # Get original triangle size
+            orig_size = getattr(original_shape, 'size', 10)  # Default to 10 if no size
+            triangle_points = [
+                QPointF(0, 0),              # Top-left corner
+                QPointF(orig_size, 0),      # Top-right corner 
+                QPointF(0, orig_size)       # Bottom-left corner
+            ]
+            triangle_polygon = QPolygonF(triangle_points)
+            ref_shape = QGraphicsPolygonItem(triangle_polygon)
+            
+            # Position the triangle so its center is at the target center
+            ref_shape.setPos(center_x - orig_size/2, center_y - orig_size/2)
+            
+            # No rotation - keep all shapes at 0 degrees
+        
+        # Get original colors from the shape
+        original_fill_color = getattr(original_shape, 'original_fill_color', '')
+        original_frame_color = getattr(original_shape, 'original_frame_color', '#8B4513')
+        original_is_filled = getattr(original_shape, 'original_is_filled', False)
+        
+        # Set appearance using original colors with black frame
+        ref_shape.setPen(QPen(QColor(0, 0, 0), 0.5))  # Always black frame
+        
+        # Set fill color - use original fill color if shape was filled, otherwise light gray
+        if original_is_filled and original_fill_color:
+            fill_color = QColor(original_fill_color)
+            ref_shape.setBrush(QBrush(fill_color))
+        else:
+            # Default to light gray if no fill color or not filled
+            ref_shape.setBrush(QBrush(QColor(200, 200, 200)))
+        
+        # Set high z-value to ensure it appears on top
+        ref_shape.setZValue(90)
+        
+        # Add number label inside the reference shape (use original array index + 1)
+        number_text = QGraphicsTextItem(str(original_index + 1))
+        number_font = QFont()
+        number_font.setPointSize(1)  # Smallest possible font size
+        number_font.setBold(True)
+        number_text.setFont(number_font)
+        number_text.setDefaultTextColor(QColor(0, 0, 0))
+        
+        # Get text bounding box to properly center it
+        text_rect = number_text.boundingRect()
+        # Position number at the true center of the reference shape
+        number_text.setPos(center_x - text_rect.width()/2, center_y - text_rect.height()/2)
+        number_text.setZValue(100)
+        
+        # Add to scene and track for removal
+        self.scene.addItem(ref_shape)
+        self.scene.addItem(number_text)
+        self.number_text_items.append(ref_shape)  # Track for removal
+        self.number_text_items.append(number_text)  # Track for removal
     
     def hide_shape_numbers(self):
         """Hide all shape serial numbers"""
