@@ -299,8 +299,10 @@ class ScalableTriangle(QGraphicsPolygonItem):
         self.serial_number = 0
         self.size = size
         
-        # Set rotation center to center of triangle
-        triangle_center = triangle_polygon.boundingRect().center()
+        # Set rotation center to center of triangle height (geometric center)
+        # For a right triangle with vertices at (0,0), (size,0), (0,size)
+        # The centroid is at (size/3, size/3)
+        triangle_center = QPointF(size/3, size/3)
         self.setTransformOriginPoint(triangle_center)
     
     def set_fill_color(self, color):
@@ -355,6 +357,7 @@ class CutterView(QGraphicsView):
         # Shape number display tracking
         self.numbers_visible = False
         self.number_text_items = []  # List to store text items showing shape numbers
+        self.placed_ref_shapes = []  # List to store bounds of placed reference shapes
         
         # Create scale bars
         self.horizontal_scale_bar = ScaleBar('horizontal', self)
@@ -492,9 +495,22 @@ class CutterView(QGraphicsView):
             shape_rect = shape.sceneBoundingRect()
             text_rect = text_item.boundingRect()
             
-            # Center the text on the shape
-            text_x = shape_rect.center().x() - text_rect.width() / 2
-            text_y = shape_rect.center().y() - text_rect.height() / 2
+            # Calculate center position based on shape type
+            if isinstance(shape, ScalableTriangle):
+                # For triangles, use geometric center (centroid)
+                triangle_size = getattr(shape, 'size', 10)
+                # Get shape position and add centroid offset
+                shape_pos = shape.pos()
+                center_x = shape_pos.x() + triangle_size/3
+                center_y = shape_pos.y() + triangle_size/3
+            else:
+                # For rectangles, use bounding rect center
+                center_x = shape_rect.center().x()
+                center_y = shape_rect.center().y()
+            
+            # Center the text on the calculated center
+            text_x = center_x - text_rect.width() / 2
+            text_y = center_y - text_rect.height() / 2
             text_item.setPos(text_x, text_y)
             
             # Set high z-value to ensure text appears on top
@@ -511,23 +527,27 @@ class CutterView(QGraphicsView):
     
     def draw_array_reference(self, first_shapes):
         """Draw reference shapes: first half at (10,10), second half at (10,400), both color-grouped"""
-        start_center_x = 10
-        start_center_y = 10
-        spacing = 18  # Distance between centers of shapes
-        max_x = 570  # Maximum x position before starting new row
-        row_spacing = 18  # Distance between rows
-        second_half_start_y = 410
+        start_center_x = 25
+        start_center_y = 40
+        initial_spacing = 10  # Start with 10 pixels spacing
+        max_x = 595  # Maximum x position before starting new row
+        row_spacing = 23  # Distance between rows
         
-        # First split the array in half based on original order
-        first_half_size = len(first_shapes) // 2
-        first_half_shapes = first_shapes[:first_half_size]
-        second_half_shapes = first_shapes[first_half_size:]
+        # Add frame rectangle from (0,0) to (620,515)
+        frame_rect = QGraphicsRectItem(0, 0, 620, 515)
+        frame_rect.setPen(QPen(QColor(0, 0, 0), 2))  # Black border, 2px thick
+        frame_rect.setBrush(QBrush())  # No fill, transparent
+        frame_rect.setZValue(-10)  # Behind other items
+        self.scene.addItem(frame_rect)
+        self.number_text_items.append(frame_rect)  # Track for removal
         
-        # Function to group shapes by color within a half
-        def group_shapes_by_color(shapes, start_index):
+        # Keep track of placed shapes for collision detection
+        self.placed_ref_shapes = []
+        
+        # Function to group all shapes by color
+        def group_shapes_by_color(shapes):
             color_groups = {}
             for i, shape in enumerate(shapes):
-                original_index = start_index + i
                 # Get the original fill color for grouping
                 fill_color = getattr(shape, 'original_fill_color', '')
                 frame_color = getattr(shape, 'original_frame_color', '#8B4513')
@@ -538,7 +558,7 @@ class CutterView(QGraphicsView):
                 
                 if group_color not in color_groups:
                     color_groups[group_color] = []
-                color_groups[group_color].append((original_index, shape))
+                color_groups[group_color].append((i, shape))
             
             # Sort color groups for consistent ordering and flatten
             sorted_color_groups = sorted(color_groups.items())
@@ -548,35 +568,242 @@ class CutterView(QGraphicsView):
                     result.append((original_index, shape))
             return result
         
-        # Group first half by color and display at (10,10)
-        first_half_grouped = group_shapes_by_color(first_half_shapes, 0)
+        # Group all shapes by color and display starting at (10,10)
+        all_shapes_grouped = group_shapes_by_color(first_shapes)
         current_x = start_center_x
         current_y = start_center_y
         
-        for original_index, original_shape in first_half_grouped:
-            self._draw_single_reference_shape(original_shape, original_index, current_x, current_y)
+        for original_index, original_shape in all_shapes_grouped:
+            # Find a safe position that doesn't overlap with previous shapes
+            safe_x = self._find_safe_x_position(original_shape, current_x, current_y, max_x)
             
-            # Move to next position
-            current_x += spacing
+            self._draw_single_reference_shape(original_shape, original_index, safe_x, current_y)
+            
+            # Update position for next shape
+            current_x = safe_x + self._get_shape_width(original_shape) + 5  # Add 5px buffer
+            
             # Check if we need to start a new row
             if current_x > max_x:
                 current_x = start_center_x
                 current_y += row_spacing
+                self.placed_ref_shapes.clear()  # Clear for new row
+    
+    def _find_safe_x_position(self, shape, start_x, y, max_x):
+        """Find a safe X position that doesn't overlap with existing shapes or original canvas shapes"""
+        test_x = start_x
+        shape_bounds = self._get_shape_bounds(shape, test_x, y)
         
-        # Group second half by color and display at (10,400)
-        second_half_grouped = group_shapes_by_color(second_half_shapes, first_half_size)
-        current_x = start_center_x
-        current_y = second_half_start_y
+        # Check against all shapes placed on this row AND original canvas shapes
+        max_attempts = 100
+        attempts = 0
         
-        for original_index, original_shape in second_half_grouped:
-            self._draw_single_reference_shape(original_shape, original_index, current_x, current_y)
+        while attempts < max_attempts:
+            collision = False
+            shape_bounds = self._get_shape_bounds(shape, test_x, y)
             
-            # Move to next position
-            current_x += spacing
-            # Check if we need to start a new row
-            if current_x > max_x:
-                current_x = start_center_x
-                current_y += row_spacing
+            # Check collision with other reference shapes on this row
+            for existing_bounds in self.placed_ref_shapes:
+                if self._bounds_overlap(shape_bounds, existing_bounds):
+                    collision = True
+                    break
+            
+            # Also check collision with reserved rectangle area (160,120) to (440,390)
+            if not collision:
+                reserved_left = 160
+                reserved_top = 120
+                reserved_right = 440
+                reserved_bottom = 390
+                
+                # Check if reference shape would overlap with reserved area
+                if (shape_bounds['right'] > reserved_left and 
+                    shape_bounds['left'] < reserved_right and
+                    shape_bounds['bottom'] > reserved_top and 
+                    shape_bounds['top'] < reserved_bottom):
+                    collision = True
+            
+            if not collision:
+                # Store this shape's bounds for future collision checks
+                self.placed_ref_shapes.append(shape_bounds)
+                return test_x
+            
+            # Move 3 pixels to the right and try again
+            test_x += 3
+            attempts += 1
+            
+            # If we've gone too far, break (let main logic handle row wrapping)
+            if test_x > max_x:
+                break
+        
+        # If we couldn't find a safe position, return the start position
+        # and let the main logic handle row wrapping
+        return start_x
+    
+    def _get_shape_width(self, shape):
+        """Get the effective width of a shape including rotation"""
+        if isinstance(shape, ScalableRectangle):
+            orig_rect = shape.rect()
+            width = orig_rect.width()
+            height = orig_rect.height()
+            rotation = getattr(shape, 'current_rotation', 0)
+            
+            if abs(rotation) > 5:  # If significantly rotated
+                # Use diagonal as safe width
+                return (width**2 + height**2)**0.5
+            else:
+                return width
+        else:  # ScalableTriangle
+            orig_size = getattr(shape, 'size', 10)
+            rotation = getattr(shape, 'current_rotation', 0)
+            
+            if abs(rotation) > 5:  # If significantly rotated
+                return orig_size * 1.414  # sqrt(2)
+            else:
+                return orig_size
+    
+    def _get_shape_bounds(self, shape, center_x, center_y):
+        """Calculate the bounding box of a shape at a given position"""
+        if isinstance(shape, ScalableRectangle):
+            orig_rect = shape.rect()
+            width = orig_rect.width()
+            height = orig_rect.height()
+            rotation = getattr(shape, 'current_rotation', 0)
+            
+            if abs(rotation) > 5:  # If significantly rotated
+                # Use diagonal for safe bounds
+                diagonal = (width**2 + height**2)**0.5
+                half_diagonal = diagonal / 2
+                return {
+                    'left': center_x - half_diagonal,
+                    'right': center_x + half_diagonal,
+                    'top': center_y - half_diagonal,
+                    'bottom': center_y + half_diagonal
+                }
+            else:
+                return {
+                    'left': center_x - width/2,
+                    'right': center_x + width/2,
+                    'top': center_y - height/2,
+                    'bottom': center_y + height/2
+                }
+        else:  # ScalableTriangle
+            orig_size = getattr(shape, 'size', 10)
+            rotation = getattr(shape, 'current_rotation', 0)
+            
+            if abs(rotation) > 5:  # If significantly rotated
+                # Use expanded bounds for rotated triangle
+                expanded_size = orig_size * 1.414  # sqrt(2)
+                half_size = expanded_size / 2
+                return {
+                    'left': center_x - half_size,
+                    'right': center_x + half_size,
+                    'top': center_y - half_size,
+                    'bottom': center_y + half_size
+                }
+            else:
+                half_size = orig_size / 2
+                return {
+                    'left': center_x - half_size,
+                    'right': center_x + half_size,
+                    'top': center_y - half_size,
+                    'bottom': center_y + half_size
+                }
+    
+    def _bounds_overlap(self, bounds1, bounds2):
+        """Check if two bounding boxes overlap"""
+        return not (bounds1['right'] <= bounds2['left'] or 
+                   bounds1['left'] >= bounds2['right'] or
+                   bounds1['bottom'] <= bounds2['top'] or
+                   bounds1['top'] >= bounds2['bottom'])
+    
+    def _find_non_overlapping_position(self, shape, start_x, start_y, initial_spacing, max_x):
+        """Find a position where the shape won't overlap with existing shapes"""
+        test_x = start_x
+        test_y = start_y
+        
+        # Calculate the bounding box of the shape at the test position
+        bounds = self._get_shape_bounds(shape, test_x, test_y)
+        
+        # Check for overlaps with existing shapes, but only move horizontally
+        # Don't let collision detection force a new row - that should be handled by the main layout logic
+        max_attempts = 50  # Prevent infinite loops
+        attempts = 0
+        
+        while self._check_overlap_with_existing(bounds) and attempts < max_attempts:
+            # Move 2 pixels to the right and try again
+            test_x += 2
+            attempts += 1
+            
+            # If we've moved too far right, break and let the main logic handle row wrapping
+            if test_x > max_x:
+                break
+            
+            # Recalculate bounds for new position
+            bounds = self._get_shape_bounds(shape, test_x, test_y)
+        
+        return (test_x, test_y)
+    
+    def _get_shape_bounds(self, shape, center_x, center_y):
+        """Calculate the bounding box of a shape at a given position, including rotation"""
+        if isinstance(shape, ScalableRectangle):
+            orig_rect = shape.rect()
+            width = orig_rect.width()
+            height = orig_rect.height()
+            rotation = getattr(shape, 'current_rotation', 0)
+            
+            # For rotated rectangles, we need to calculate the actual bounds
+            if rotation != 0:
+                # Approximate expanded bounds for rotated rectangle
+                diagonal = (width**2 + height**2)**0.5
+                half_diagonal = diagonal / 2
+                return {
+                    'left': center_x - half_diagonal,
+                    'right': center_x + half_diagonal,
+                    'top': center_y - half_diagonal,
+                    'bottom': center_y + half_diagonal
+                }
+            else:
+                return {
+                    'left': center_x - width/2,
+                    'right': center_x + width/2,
+                    'top': center_y - height/2,
+                    'bottom': center_y + height/2
+                }
+        else:  # ScalableTriangle
+            orig_size = getattr(shape, 'size', 10)
+            rotation = getattr(shape, 'current_rotation', 0)
+            
+            # For rotated triangles, use expanded bounds
+            if rotation != 0:
+                # Approximate expanded bounds for rotated triangle
+                diagonal = orig_size * 1.414  # sqrt(2) approximation
+                half_diagonal = diagonal / 2
+                return {
+                    'left': center_x - half_diagonal,
+                    'right': center_x + half_diagonal,
+                    'top': center_y - half_diagonal,
+                    'bottom': center_y + half_diagonal
+                }
+            else:
+                return {
+                    'left': center_x - orig_size/2,
+                    'right': center_x + orig_size/2,
+                    'top': center_y - orig_size/2,
+                    'bottom': center_y + orig_size/2
+                }
+    
+    def _check_overlap_with_existing(self, bounds):
+        """Check if the given bounds overlap with any existing shapes"""
+        for existing_bounds in self.placed_ref_shapes:
+            if self._bounds_overlap(bounds, existing_bounds):
+                return True
+        return False
+    
+    def _bounds_overlap(self, bounds1, bounds2):
+        """Check if two bounding boxes overlap"""
+        return not (bounds1['right'] <= bounds2['left'] or 
+                   bounds1['left'] >= bounds2['right'] or
+                   bounds1['bottom'] <= bounds2['top'] or
+                   bounds1['top'] >= bounds2['bottom'])
     
     def _draw_single_reference_shape(self, original_shape, original_index, center_x, center_y):
         """Helper method to draw a single reference shape"""
@@ -592,7 +819,13 @@ class CutterView(QGraphicsView):
             # Position the shape so its center is at the target center
             ref_shape.setPos(center_x - width/2, center_y - height/2)
             
-            # No rotation - keep all shapes at 0 degrees
+            # Apply original rotation
+            original_rotation = getattr(original_shape, 'current_rotation', 0)
+            if original_rotation != 0:
+                # Set rotation center to center of rectangle
+                rect_center = QPointF(width/2, height/2)
+                ref_shape.setTransformOriginPoint(rect_center)
+                ref_shape.setRotation(original_rotation)
                 
         else:  # ScalableTriangle
             # Get original triangle size
@@ -608,7 +841,13 @@ class CutterView(QGraphicsView):
             # Position the triangle so its center is at the target center
             ref_shape.setPos(center_x - orig_size/2, center_y - orig_size/2)
             
-            # No rotation - keep all shapes at 0 degrees
+            # Apply original rotation with geometric center as pivot
+            original_rotation = getattr(original_shape, 'current_rotation', 0)
+            if original_rotation != 0:
+                # Set rotation center to geometric center (centroid)
+                triangle_center = QPointF(orig_size/3, orig_size/3)
+                ref_shape.setTransformOriginPoint(triangle_center)
+                ref_shape.setRotation(original_rotation)
         
         # Get original colors from the shape
         original_fill_color = getattr(original_shape, 'original_fill_color', '')
@@ -639,8 +878,22 @@ class CutterView(QGraphicsView):
         
         # Get text bounding box to properly center it
         text_rect = number_text.boundingRect()
-        # Position number at the true center of the reference shape
-        number_text.setPos(center_x - text_rect.width()/2, center_y - text_rect.height()/2)
+        
+        # Calculate text position based on shape type
+        if isinstance(original_shape, ScalableTriangle):
+            # For triangles, position text at geometric center (centroid)
+            # Triangle is positioned at center_x - orig_size/2, center_y - orig_size/2
+            # Centroid is at (size/3, size/3) from triangle's top-left corner
+            orig_size = getattr(original_shape, 'size', 10)
+            triangle_top_left_x = center_x - orig_size/2
+            triangle_top_left_y = center_y - orig_size/2
+            text_center_x = triangle_top_left_x + orig_size/3
+            text_center_y = triangle_top_left_y + orig_size/3
+            number_text.setPos(text_center_x - text_rect.width()/2, text_center_y - text_rect.height()/2)
+        else:
+            # For rectangles, position at the provided center
+            number_text.setPos(center_x - text_rect.width()/2, center_y - text_rect.height()/2)
+        
         number_text.setZValue(100)
         
         # Add to scene and track for removal
@@ -662,6 +915,7 @@ class CutterView(QGraphicsView):
                 self.scene.removeItem(text_item)
         
         self.number_text_items.clear()
+        self.placed_ref_shapes.clear()  # Clear collision tracking
         print("Hidden shape numbers")
     
     def create_grid(self):
@@ -2257,11 +2511,19 @@ class CutterWindow(QMainWindow):
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Create general report
-            self.create_general_report(shape_counts, save_dir, timestamp)
-            
-            # Create individual box reports
+            # Create individual box reports first
             self.create_box_reports(box_shapes, save_dir, timestamp)
+            
+            # Create general report as sum of all box reports (calculate from box_shapes)
+            general_shape_counts = {}
+            for box_name, shapes in box_shapes.items():
+                for key, count in shapes.items():
+                    if key in general_shape_counts:
+                        general_shape_counts[key] += count
+                    else:
+                        general_shape_counts[key] = count
+            
+            self.create_general_report(general_shape_counts, save_dir, timestamp)
             
             print(f"All reports created in: {save_dir}")
             print(f"General report + {len(box_shapes)} box reports generated")

@@ -460,8 +460,10 @@ class ScalableTriangle(QGraphicsPolygonItem):
         self.serial_number = ScalableTriangle._next_serial_number
         ScalableTriangle._next_serial_number += 1
         
-        # Set rotation center to the center of the triangle
-        triangle_center = triangle_polygon.boundingRect().center()
+        # Set rotation center to center of triangle height (geometric center)
+        # For a right triangle with vertices at (0,0), (size,0), (0,size)
+        # The centroid is at (size/3, size/3)
+        triangle_center = QPointF(size/3, size/3)
         self.setTransformOriginPoint(triangle_center)
     
     def paint(self, painter, option, widget):
