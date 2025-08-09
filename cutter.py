@@ -16,9 +16,194 @@ import xml.etree.ElementTree as ET
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QFileDialog, QGraphicsView, 
                              QGraphicsScene, QGraphicsPixmapItem, QMenuBar, QAction,
-                             QGraphicsRectItem, QGraphicsPolygonItem, QGraphicsTextItem)
-from PyQt5.QtCore import Qt, QRectF, QPointF, QSize
-from PyQt5.QtGui import QColor, QPen, QBrush, QPixmap, QPolygonF, QPainterPath, QPainter
+                             QGraphicsRectItem, QGraphicsPolygonItem, QGraphicsTextItem,
+                             QGraphicsLineItem, QGraphicsEllipseItem)
+from PyQt5.QtCore import Qt, QRectF, QPointF, QSize, QTimer
+from PyQt5.QtGui import QColor, QPen, QBrush, QPixmap, QPolygonF, QPainterPath, QPainter, QFont, QFontMetrics
+
+class ScaleBar(QWidget):
+    """Custom scale bar widget that shows pixel measurements"""
+    def __init__(self, orientation='horizontal', parent=None):
+        super().__init__(parent)
+        self.orientation = orientation  # 'horizontal' or 'vertical'
+        self.scale_factor = 1.0  # Current zoom scale factor
+        self.scene_rect = QRectF(0, 0, 1000, 1000)  # Scene dimensions
+        self.view_rect = QRectF(0, 0, 500, 500)  # Visible area
+        
+        # Setup appearance
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(palette.Window, QColor(240, 240, 240))
+        self.setPalette(palette)
+        
+        # Set size based on orientation
+        if orientation == 'horizontal':
+            self.setFixedHeight(30)
+            self.setMinimumWidth(100)
+        else:
+            self.setFixedWidth(30)
+            self.setMinimumHeight(100)
+    
+    def update_scale(self, scale_factor, scene_rect, view_rect):
+        """Update the scale bar based on current zoom and view"""
+        self.scale_factor = scale_factor
+        self.scene_rect = scene_rect
+        self.view_rect = view_rect
+        self.update()  # Trigger repaint
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Set font
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        
+        # Calculate tick spacing
+        if self.orientation == 'horizontal':
+            self._paint_horizontal_scale(painter)
+        else:
+            self._paint_vertical_scale(painter)
+    
+    def _paint_horizontal_scale(self, painter):
+        """Paint horizontal scale bar"""
+        width = self.width()
+        height = self.height()
+        
+        # Calculate pixel size in scene coordinates
+        pixels_per_scene_unit = 1.0 / self.scale_factor
+        
+        # Determine appropriate tick spacing (in pixels)
+        tick_spacings = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+        target_tick_width = 50  # Desired width between major ticks in pixels
+        
+        # Find best tick spacing
+        best_spacing = tick_spacings[0]
+        for spacing in tick_spacings:
+            scene_spacing = spacing * pixels_per_scene_unit
+            pixel_width = scene_spacing * self.scale_factor
+            if pixel_width >= target_tick_width:
+                best_spacing = spacing
+                break
+            best_spacing = spacing
+        
+        # Draw background
+        painter.fillRect(0, 0, width, height, QColor(240, 240, 240))
+        
+        # Draw border
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawLine(0, height-1, width, height-1)
+        
+        # Calculate visible range in scene coordinates
+        view_left = self.view_rect.left()
+        view_right = self.view_rect.right()
+        
+        # Calculate starting tick position
+        start_tick = int(view_left // best_spacing) * best_spacing
+        
+        # Draw ticks and labels
+        painter.setPen(QPen(QColor(50, 50, 50), 1))
+        
+        current_tick = start_tick
+        while current_tick <= view_right + best_spacing:
+            # Convert scene position to widget position
+            scene_pos = current_tick - view_left
+            widget_pos = (scene_pos / (view_right - view_left)) * width
+            
+            if 0 <= widget_pos <= width:
+                # Draw major tick
+                painter.drawLine(int(widget_pos), height-10, int(widget_pos), height-1)
+                
+                # Draw label
+                label = str(int(current_tick))
+                fm = QFontMetrics(painter.font())
+                label_width = fm.width(label)
+                label_x = int(widget_pos - label_width/2)
+                painter.drawText(label_x, 12, label)
+                
+                # Draw minor ticks
+                minor_spacing = best_spacing / 5
+                for i in range(1, 5):
+                    minor_pos = current_tick + i * minor_spacing
+                    if minor_pos <= view_right:
+                        minor_scene_pos = minor_pos - view_left
+                        minor_widget_pos = (minor_scene_pos / (view_right - view_left)) * width
+                        if 0 <= minor_widget_pos <= width:
+                            painter.drawLine(int(minor_widget_pos), height-5, int(minor_widget_pos), height-1)
+            
+            current_tick += best_spacing
+    
+    def _paint_vertical_scale(self, painter):
+        """Paint vertical scale bar"""
+        width = self.width()
+        height = self.height()
+        
+        # Calculate pixel size in scene coordinates
+        pixels_per_scene_unit = 1.0 / self.scale_factor
+        
+        # Determine appropriate tick spacing (in pixels)
+        tick_spacings = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+        target_tick_height = 50  # Desired height between major ticks in pixels
+        
+        # Find best tick spacing
+        best_spacing = tick_spacings[0]
+        for spacing in tick_spacings:
+            scene_spacing = spacing * pixels_per_scene_unit
+            pixel_height = scene_spacing * self.scale_factor
+            if pixel_height >= target_tick_height:
+                best_spacing = spacing
+                break
+            best_spacing = spacing
+        
+        # Draw background
+        painter.fillRect(0, 0, width, height, QColor(240, 240, 240))
+        
+        # Draw border
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawLine(width-1, 0, width-1, height)
+        
+        # Calculate visible range in scene coordinates
+        view_top = self.view_rect.top()
+        view_bottom = self.view_rect.bottom()
+        
+        # Calculate starting tick position
+        start_tick = int(view_top // best_spacing) * best_spacing
+        
+        # Draw ticks and labels
+        painter.setPen(QPen(QColor(50, 50, 50), 1))
+        
+        current_tick = start_tick
+        while current_tick <= view_bottom + best_spacing:
+            # Convert scene position to widget position
+            scene_pos = current_tick - view_top
+            widget_pos = (scene_pos / (view_bottom - view_top)) * height
+            
+            if 0 <= widget_pos <= height:
+                # Draw major tick
+                painter.drawLine(width-10, int(widget_pos), width-1, int(widget_pos))
+                
+                # Draw label (rotated for vertical)
+                painter.save()
+                painter.translate(8, int(widget_pos))
+                painter.rotate(-90)
+                label = str(int(current_tick))
+                fm = QFontMetrics(painter.font())
+                label_width = fm.width(label)
+                painter.drawText(-label_width//2, 0, label)
+                painter.restore()
+                
+                # Draw minor ticks
+                minor_spacing = best_spacing / 5
+                for i in range(1, 5):
+                    minor_pos = current_tick + i * minor_spacing
+                    if minor_pos <= view_bottom:
+                        minor_scene_pos = minor_pos - view_top
+                        minor_widget_pos = (minor_scene_pos / (view_bottom - view_top)) * height
+                        if 0 <= minor_widget_pos <= height:
+                            painter.drawLine(width-5, int(minor_widget_pos), width-1, int(minor_widget_pos))
+            
+            current_tick += best_spacing
 
 class GridHandle(QGraphicsRectItem):
     """Draggable handle for moving the grid"""
@@ -164,6 +349,24 @@ class CutterView(QGraphicsView):
         self.grid_offset_x = 0
         self.grid_offset_y = 0
         
+        # Create scale bars
+        self.horizontal_scale_bar = ScaleBar('horizontal', self)
+        self.vertical_scale_bar = ScaleBar('vertical', self)
+        
+        # Position scale bars (they will be repositioned in resizeEvent)
+        self.horizontal_scale_bar.move(30, 0)
+        self.vertical_scale_bar.move(0, 30)
+        
+        # Set viewport margins to account for scale bars
+        self.setViewportMargins(30, 30, 0, 0)
+        
+        # Connect to view change events to update scale bars
+        self.horizontalScrollBar().valueChanged.connect(self.update_scale_bars)
+        self.verticalScrollBar().valueChanged.connect(self.update_scale_bars)
+        
+        # Also connect to scene rect changes
+        self.scene.sceneRectChanged.connect(self.update_scale_bars)
+        
     def wheelEvent(self, event):
         """Handle mouse wheel for zooming towards cursor position"""
         # Zoom factor
@@ -184,6 +387,9 @@ class CutterView(QGraphicsView):
         newPos = self.mapToScene(event.pos())
         delta = newPos - oldPos
         self.translate(delta.x(), delta.y())
+        
+        # Update scale bars after zooming
+        QTimer.singleShot(50, self.update_scale_bars)
     
     def set_background_image(self, pixmap):
         """Set background image"""
@@ -193,24 +399,28 @@ class CutterView(QGraphicsView):
         self.background_item = QGraphicsPixmapItem(pixmap)
         self.background_item.setZValue(-1)  # Put background behind everything
         self.scene.addItem(self.background_item)
-        
-        # Center the view on the background
-        self.centerOn(self.background_item)
     
     def add_shape(self, shape):
         """Add a shape to the scene"""
         self.scene.addItem(shape)
     
     def clear_shapes(self):
-        """Clear all shapes"""
+        """Clear all shapes but preserve background items"""
         # Remove all items except background, grid, grid labels, cut lines, and grid handle
+        items_to_remove = []
         for item in self.scene.items():
             if (item != self.background_item and 
                 item not in self.grid_items and 
                 item not in self.grid_labels and
                 item not in self.cut_lines and
                 item != self.grid_handle):
-                self.scene.removeItem(item)
+                items_to_remove.append(item)
+        
+        # Remove items
+        for item in items_to_remove:
+            self.scene.removeItem(item)
+        
+        print(f"Cleared {len(items_to_remove)} shape items")
     
     def create_grid(self):
         """Create a 6x6 grid with boxes of 250x250 pixels each"""
@@ -1403,6 +1613,49 @@ class CutterView(QGraphicsView):
                 # Reset to transparent fill and black frame
                 item.setBrush(QBrush(Qt.transparent))
                 item.setPen(QPen(QColor(0, 0, 0), 0))  # Reset to black frame
+    
+    def update_scale_bars(self):
+        """Update the scale bars based on current view state"""
+        if not hasattr(self, 'horizontal_scale_bar') or not hasattr(self, 'vertical_scale_bar'):
+            return
+        
+        # Check if scene is still valid
+        if not hasattr(self, 'scene') or self.scene is None:
+            return
+            
+        try:
+            # Get current transformation matrix
+            transform = self.transform()
+            scale_factor = transform.m11()  # Horizontal scale factor
+            
+            # Get visible scene rectangle
+            visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+            
+            # Update scale bars
+            self.horizontal_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+            self.vertical_scale_bar.update_scale(scale_factor, self.scene.sceneRect(), visible_scene_rect)
+        except RuntimeError:
+            # Scene has been deleted, skip update
+            return
+    
+    def resizeEvent(self, event):
+        """Handle resize events to reposition scale bars"""
+        super().resizeEvent(event)
+        
+        if hasattr(self, 'horizontal_scale_bar') and hasattr(self, 'vertical_scale_bar'):
+            # Position horizontal scale bar at top, accounting for the full widget width
+            self.horizontal_scale_bar.setGeometry(30, 0, self.width() - 30, 30)
+            
+            # Position vertical scale bar at left, accounting for the full widget height
+            self.vertical_scale_bar.setGeometry(0, 30, 30, self.height() - 30)
+            
+            # Update scale bars
+            self.update_scale_bars()
+    
+    def showEvent(self, event):
+        """Handle show events to initialize scale bars"""
+        super().showEvent(event)
+        QTimer.singleShot(50, self.update_scale_bars)
 
 class CutterWindow(QMainWindow):
     """Main window for the cutter application"""
@@ -1413,6 +1666,9 @@ class CutterWindow(QMainWindow):
         
         # Store the path of the currently imported CSV file
         self.current_csv_file = None
+        
+        # Store DXF items separately for independent clearing
+        self.dxf_items = []
         
         # Create central widget
         central_widget = QWidget()
@@ -1427,6 +1683,14 @@ class CutterWindow(QMainWindow):
         import_btn = QPushButton("Import Array")
         import_btn.clicked.connect(self.import_array_from_csv)
         toolbar_layout.addWidget(import_btn)
+        
+        import_bg_btn = QPushButton("Import Background")
+        import_bg_btn.clicked.connect(self.import_background_image)
+        toolbar_layout.addWidget(import_bg_btn)
+        
+        clear_bg_btn = QPushButton("Clear Background")
+        clear_bg_btn.clicked.connect(self.clear_background_image)
+        toolbar_layout.addWidget(clear_bg_btn)
         
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(self.clear_all)
@@ -2207,10 +2471,10 @@ class CutterWindow(QMainWindow):
                         width = rect.width()
                         height = rect.height()
                     
-                    # Get position relative to box (shape position - box position)
+                    # Get position relative to origin (175 pixels left and 135 pixels above box top-left)
                     shape_pos = item.pos()
-                    relative_x = shape_pos.x() - box_x
-                    relative_y = shape_pos.y() - box_y
+                    relative_x = shape_pos.x() - (box_x - 175)
+                    relative_y = shape_pos.y() - (box_y - 135)
                     
                     # Get rotation
                     rotation = getattr(item, 'current_rotation', 0)
@@ -2345,6 +2609,45 @@ class CutterWindow(QMainWindow):
             current_scale = self.cutter_view.transform().m11()
             if current_scale > 2.0:  # If zoomed in too much, zoom out a bit
                 self.cutter_view.scale(0.5, 0.5)
+    
+    def import_background_image(self):
+        """Import a background image"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Background Image", "", 
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.gif *.tiff);;All Files (*)"
+        )
+        if file_path:
+            try:
+                # Load the image
+                pixmap = QPixmap(file_path)
+                if pixmap.isNull():
+                    print(f"Error: Could not load image from {file_path}")
+                    return
+                
+                # Set the background image
+                self.cutter_view.set_background_image(pixmap)
+                
+                # Position the background image at (155, 115)
+                if self.cutter_view.background_item:
+                    self.cutter_view.background_item.setPos(155, 115)
+                
+                print(f"Successfully imported background image: {file_path}")
+                print(f"Background positioned at (155, 115)")
+                
+                # Optionally center the view on the background
+                self.cutter_view.centerOn(self.cutter_view.background_item)
+                
+            except Exception as e:
+                print(f"Error importing background image: {e}")
+    
+    def clear_background_image(self):
+        """Clear the background image"""
+        if self.cutter_view.background_item:
+            self.cutter_view.scene.removeItem(self.cutter_view.background_item)
+            self.cutter_view.background_item = None
+            print("Background image cleared")
+        else:
+            print("No background image to clear")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
